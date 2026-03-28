@@ -33,10 +33,78 @@ Every recording passes through:
 ## Installation
 
 ```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[datasets,dev]"
 ```
 
-## Usage
+Requires Python 3.10+. The install pulls in MNE, specparam, python-picard, asrpy, mne-icalabel, mne-connectivity, onnxruntime, and other dependencies.
+
+## Quick Start: Build Norms from LEMON
+
+### 1. Download LEMON EEG data
+
+Download from [the LEMON site](https://fcon_1000.projects.nitrc.org/indi/retro/MPI_LEMON.html). You need the EEG files in BIDS layout:
+
+```
+lemon/
+  participants.tsv
+  sub-010002/eeg/sub-010002_task-rest_EO_eeg.vhdr
+  sub-010002/eeg/sub-010002_task-rest_EC_eeg.vhdr
+  ...
+```
+
+### 2. Test with a few subjects first
+
+```bash
+source .venv/bin/activate
+
+# Fast test: 5 subjects, spectral only (~10 min)
+python scripts/build_norms.py /path/to/lemon \
+    -o ./test_output \
+    --max-subjects 5 \
+    --skip-connectivity
+```
+
+### 3. Full normative build
+
+```bash
+# Eyes-open only (~8-10 hours for ~220 subjects)
+python scripts/build_norms.py /path/to/lemon -o ./norms_output --condition eo
+
+# Both conditions, full pipeline (~15-20 hours)
+python scripts/build_norms.py /path/to/lemon -o ./norms_output
+```
+
+The script checkpoints after each subject. If it stops, re-run the same command to resume from where it left off.
+
+### 4. Output
+
+```
+norms_output/
+  subjects/          # Per-subject checkpoint JSONs (for resume)
+  norms.json         # Normative distributions (machine-readable)
+  norms.csv          # Same as above (spreadsheet-friendly)
+  subjects.csv       # Per-subject metrics (for rebinning)
+  errors.log         # Any processing failures
+  run_config.json    # Exact parameters used (reproducibility)
+```
+
+### CLI options
+
+```
+python scripts/build_norms.py --help
+
+  data_dir                  Path to dataset (BIDS layout)
+  --output, -o              Output directory (default: ./norms_output)
+  --dataset, -d             Dataset: lemon, hbn, mipdb (default: lemon)
+  --condition               eo, ec, or both (default: both)
+  --max-subjects N          Limit to N subjects (0 = all)
+  --skip-connectivity       Skip connectivity (faster, spectral-only norms)
+  --age-bins 20 30 40 ...   Custom age bin edges (default: decade bins)
+```
+
+## Python API
 
 ### Process a single recording
 
@@ -46,33 +114,7 @@ from open_normative.pipeline import process_resting
 
 raw = load_and_standardize("path/to/recording.vhdr")
 result = process_resting(raw, condition="eo")
-print(result.to_flat_dict())
-```
-
-### Build normative distributions from LEMON
-
-```python
-from open_normative.datasets.lemon import LEMONLoader
-from open_normative.pipeline import process_resting
-from open_normative.normative import build_normative
-from open_normative.io import write_norms_json, write_subjects_csv
-
-loader = LEMONLoader()
-subjects = []
-
-for record in loader.iter_subjects("/path/to/lemon"):
-    result = process_resting(record.raw, condition=record.condition)
-    subjects.append({
-        "subject_id": record.subject_id,
-        "age": record.age,
-        "sex": record.sex,
-        "condition": record.condition,
-        "metrics": result.to_nested_dict(),
-    })
-
-norms = build_normative(subjects)
-write_norms_json(norms, "norms.json")
-write_subjects_csv(subjects, "subjects.csv")
+print(result.to_nested_dict())
 ```
 
 ### Compare a clinical recording against norms
@@ -81,7 +123,7 @@ write_subjects_csv(subjects, "subjects.csv")
 from open_normative.compare import compare_to_norms
 from open_normative.io import read_norms_json
 
-norms = read_norms_json("norms.json")
+norms = read_norms_json("norms_output/norms.json")
 results = compare_to_norms(
     metrics=clinical_result.to_nested_dict(),
     norms=norms,
