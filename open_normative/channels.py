@@ -4,6 +4,8 @@ Handles mapping from various EEG system naming conventions to the standard
 19-channel 10-20 montage used for normative processing.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import mne
