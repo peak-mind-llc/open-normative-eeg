@@ -148,7 +148,7 @@ def compute_aperiodic(
             results[ch] = {
                 "exponent": exponent,
                 "offset": offset,
-                "slope": abs(exponent),  # steepness magnitude; positive by convention
+                "slope": float(-exponent),
                 "r_squared": r_squared,
                 "fit_quality": fit_quality,
                 "n_peaks": n_peaks,

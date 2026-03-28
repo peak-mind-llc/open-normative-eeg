@@ -73,7 +73,8 @@ def test_compute_aperiodic(synthetic_raw_19ch):
     assert "exponent" in ap_results["Fp1"]
     assert "slope" in ap_results["Fp1"]
     assert "r_squared" in ap_results["Fp1"]
-    assert ap_results["Fp1"]["slope"] > 0
+    # slope = -exponent; for 1/f data, exponent > 0 so slope < 0
+    assert ap_results["Fp1"]["slope"] < 0
 
 
 def test_compute_asymmetry(mock_band_power):
