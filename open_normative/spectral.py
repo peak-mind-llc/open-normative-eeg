@@ -98,7 +98,23 @@ def compute_aperiodic(
     Returns:
         Dict of {ch_name: {exponent, offset, slope, r_squared, ...}}.
     """
-    from specparam import SpectralModel
+    try:
+        from specparam import SpectralModel
+    except ImportError:
+        import warnings
+        warnings.warn(
+            "specparam not installed — skipping aperiodic fitting; "
+            "install with: pip install specparam"
+        )
+        return {ch: {
+            "exponent": float("nan"),
+            "offset": float("nan"),
+            "slope": float("nan"),
+            "r_squared": 0.0,
+            "fit_quality": "skipped",
+            "n_peaks": 0,
+            "peak_params": [],
+        } for ch in ch_names}
 
     psds_uv = psds * 1e12
     r_sq_threshold = params.get("r_squared_threshold", 0.85)

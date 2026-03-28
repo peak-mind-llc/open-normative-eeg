@@ -4,6 +4,8 @@ All functions take an MNE Raw object and a params dict. No hidden defaults.
 Parameters come from open_normative.parameters.PIPELINE_PARAMS.
 """
 
+from __future__ import annotations
+
 import warnings
 
 import mne
@@ -192,7 +194,13 @@ def run_ica(raw: mne.io.Raw, params: dict) -> dict:
     if raw_fit is None:
         raw_fit = raw
 
-    ica.fit(raw_fit, verbose=False)
+    try:
+        ica.fit(raw_fit, verbose=False)
+    except ImportError as exc:
+        warnings.warn(
+            f"ICA fitting skipped — required package not available: {exc}"
+        )
+        return {"ica": None, "rejected_components": [], "labels": None}
 
     rejected = []
     labels_result = None
