@@ -58,45 +58,25 @@ pip install -e ".[datasets,dev]"
 
 Requires Python 3.10+. The install pulls in MNE, specparam, python-picard, asrpy, mne-icalabel, mne-connectivity, onnxruntime, and other dependencies.
 
-## Quick Start: Build Norms from LEMON
+## Building Normative Databases
 
-### 1. Download LEMON EEG data
+The build script processes any supported dataset through the pipeline, checkpoints after each subject (so you can resume if interrupted), and outputs normative distributions as JSON and CSV.
 
-Download from [the LEMON site](https://fcon_1000.projects.nitrc.org/indi/retro/MPI_LEMON.html). You need the EEG files in BIDS layout:
+### CLI options
 
 ```
-lemon/
-  participants.tsv
-  sub-010002/eeg/sub-010002_task-rest_EO_eeg.vhdr
-  sub-010002/eeg/sub-010002_task-rest_EC_eeg.vhdr
-  ...
+python scripts/build_norms.py --help
+
+  data_dir                  Path to dataset (BIDS-like layout)
+  --output, -o              Output directory (default: ./norms_output)
+  --dataset, -d             Dataset: lemon, hbn, mipdb (default: lemon)
+  --condition               eo, ec, or both (default: both)
+  --max-subjects N          Limit to N subjects (0 = all)
+  --skip-connectivity       Skip connectivity (faster, spectral-only norms)
+  --age-bins 20 30 40 ...   Custom age bin edges (default: decade bins)
 ```
 
-### 2. Test with a few subjects first
-
-```bash
-source .venv/bin/activate
-
-# Fast test: 5 subjects, spectral only (~10 min)
-python scripts/build_norms.py /path/to/lemon \
-    -o ./test_output \
-    --max-subjects 5 \
-    --skip-connectivity
-```
-
-### 3. Full normative build
-
-```bash
-# Eyes-open only (~8-10 hours for ~220 subjects)
-python scripts/build_norms.py /path/to/lemon -o ./norms_output --condition eo
-
-# Both conditions, full pipeline (~15-20 hours)
-python scripts/build_norms.py /path/to/lemon -o ./norms_output
-```
-
-The script checkpoints after each subject. If it stops, re-run the same command to resume from where it left off.
-
-### 4. Output
+### Output
 
 ```
 norms_output/
@@ -108,18 +88,126 @@ norms_output/
   run_config.json    # Exact parameters used (reproducibility)
 ```
 
-### CLI options
+---
+
+### LEMON (~220 subjects, ages 20-77, 62-channel BrainVision)
+
+**Reference:** Babayan et al. (2019). A mind-brain-body dataset of MRI, EEG, and cognition. *Scientific Data*, 6, 180308. [doi:10.1038/sdata.2018.308](https://doi.org/10.1038/sdata.2018.308)
+
+#### 1. Download LEMON EEG data
+
+The data is hosted on an FTP server. Download the EEG portion and the participants file:
+
+1. Go to [the LEMON site](https://fcon_1000.projects.nitrc.org/indi/retro/MPI_LEMON.html) and follow the download links, or access the FTP server directly at `ftp://ftp.gwdg.de/pub/misc/MPI-Leipzig_Mind-Body-Emotion/`.
+2. Download the EEG BIDS archive (contains `.vhdr`/`.vmrk`/`.eeg` files per subject).
+3. Download `participants.tsv` (contains age, sex per subject).
+4. Extract the archive into a single directory.
+
+#### 2. Verify the BIDS layout
+
+The loader expects this structure:
 
 ```
-python scripts/build_norms.py --help
+lemon/
+  participants.tsv
+  sub-010002/eeg/sub-010002_task-rest_EO_eeg.vhdr
+  sub-010002/eeg/sub-010002_task-rest_EC_eeg.vhdr
+  ...
+```
 
-  data_dir                  Path to dataset (BIDS layout)
-  --output, -o              Output directory (default: ./norms_output)
-  --dataset, -d             Dataset: lemon, hbn, mipdb (default: lemon)
-  --condition               eo, ec, or both (default: both)
-  --max-subjects N          Limit to N subjects (0 = all)
-  --skip-connectivity       Skip connectivity (faster, spectral-only norms)
-  --age-bins 20 30 40 ...   Custom age bin edges (default: decade bins)
+Each subject has separate files for Eyes Open (EO) and Eyes Closed (EC). The 62-channel 10-10 names (e.g., T7, T8, P7, P8) are automatically mapped to the standard 19-channel 10-20 montage (T3, T4, T5, T6) by name matching.
+
+#### 3. Build norms
+
+```bash
+source .venv/bin/activate
+
+# Fast test: 5 subjects, spectral only
+python scripts/build_norms.py /path/to/lemon \
+    -o ./test_output \
+    --max-subjects 5 \
+    --skip-connectivity
+
+# Eyes-open only, full pipeline
+python scripts/build_norms.py /path/to/lemon -o ./norms_output --condition eo
+
+# Both conditions, full pipeline
+python scripts/build_norms.py /path/to/lemon -o ./norms_output
+```
+
+---
+
+### HBN (~2500 subjects, ages 5-21, 128-channel EGI)
+
+**Reference:** Alexander et al. (2017). An open resource for transdiagnostic research in pediatric mental health and learning disorders. *Scientific Data*, 4, 170181. [doi:10.1038/sdata.2017.181](https://doi.org/10.1038/sdata.2017.181)
+
+#### 1. Get access to HBN data
+
+HBN requires a Data Use Agreement:
+
+1. Visit [the HBN site](http://fcon_1000.projects.nitrc.org/indi/cmi_healthy_brain_network/).
+2. Register for data access through the LORIS portal.
+3. Download the EEG resting-state recordings (`.mff` format, 128-channel EGI HydroCel Geodesic Sensor Net).
+
+#### 2. Organize into BIDS-like layout
+
+The loader expects this structure:
+
+```
+hbn/
+  participants.tsv              # participant_id, age, sex
+  sub-NDARXXXX/eeg/
+    sub-NDARXXXX_task-restEO_eeg.mff/
+    sub-NDARXXXX_task-restEC_eeg.mff/
+  ...
+```
+
+You may need to create `participants.tsv` from HBN's phenotypic data files. The TSV should have columns: `participant_id`, `age`, `sex`.
+
+The 128 EGI channels (E1-E128) are automatically mapped to the 19-channel 10-20 montage using spatial nearest-neighbor matching based on electrode positions.
+
+#### 3. Build norms
+
+```bash
+# Use pediatric age bins (3-year bins from 5-21)
+python scripts/build_norms.py /path/to/hbn -o ./hbn_norms \
+    --dataset hbn \
+    --age-bins 5 8 11 14 17 22
+```
+
+---
+
+### MIPDB (~126 subjects, ages 6-44, 128-channel EGI)
+
+**Reference:** Langer et al. (2017). A resource for assessing information processing in the developing brain using EEG and eye tracking. *Scientific Data*, 4, 170040. [doi:10.1038/sdata.2017.40](https://doi.org/10.1038/sdata.2017.40)
+
+#### 1. Download MIPDB data
+
+1. Visit [the MIPDB site](http://fcon_1000.projects.nitrc.org/indi/cmi_eeg/).
+2. Download the EEG resting-state data (`.raw` or `.mff` format, 128-channel EGI).
+
+#### 2. Organize into BIDS-like layout
+
+The loader expects this structure:
+
+```
+mipdb/
+  participants.tsv              # participant_id, age, sex
+  sub-XXXX/eeg/
+    sub-XXXX_task-restEO_eeg.raw
+    sub-XXXX_task-restEC_eeg.raw
+  ...
+```
+
+You may need to create `participants.tsv` from MIPDB's demographic data. The 128-channel EGI mapping works the same way as HBN (spatial nearest-neighbor).
+
+#### 3. Build norms
+
+```bash
+# Age bins spanning 6-44 range
+python scripts/build_norms.py /path/to/mipdb -o ./mipdb_norms \
+    --dataset mipdb \
+    --age-bins 6 12 18 25 35 45
 ```
 
 ## Python API
