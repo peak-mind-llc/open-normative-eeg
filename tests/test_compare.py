@@ -80,3 +80,22 @@ def test_compare_no_matching_bin():
     metrics = {"Fz": {"Alpha": {"relative_power": 0.25}}}
     results = compare_to_norms(metrics=metrics, norms=[cell], age=85, condition="eo")
     assert len(results) == 0
+
+
+def test_compare_corrected_absolute_power():
+    """Corrected absolute power should use log-space z-scores."""
+    cell = NormCell(
+        bin="30-39", condition="eo", channel="Fz", band="Alpha",
+        metric="corrected_absolute_power", n=30, mean=5.0, sd=2.0,
+        log_mean=1.5, log_sd=0.3, log_transformed=True,
+        normality_p=0.5,
+        percentiles={"1": 1, "5": 2, "10": 2.5, "25": 3.5, "50": 5, "75": 6.5, "90": 8, "95": 9, "99": 11},
+    )
+    metrics = {"Fz": {"Alpha": {"corrected_absolute_power": 7.0}}}
+    results = compare_to_norms(metrics=metrics, norms=[cell], age=35, condition="eo")
+    assert len(results) == 1
+    r = results[0]
+    assert r.metric == "corrected_absolute_power"
+    assert r.z_score is not None
+    # z-score should be positive (7.0 > mean of 5.0)
+    assert r.z_score > 0

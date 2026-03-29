@@ -19,16 +19,34 @@ Every recording passes through:
 5. **Artifact cleaning** — ASR (Artifact Subspace Reconstruction)
 6. **ICA** — PICARD extended with ICLabel auto-classification
 7. **Re-referencing** — Average reference
-8. **Spectral analysis** — PSD (Welch), 11 frequency bands, aperiodic/1/f fitting (specparam), asymmetry
+8. **Spectral analysis** — PSD (Welch), 11 frequency bands, aperiodic/1/f fitting (specparam), specparam-corrected band power, asymmetry
 9. **Connectivity** — dwPLI, coherence, imaginary coherence across 10 hub regions, graph metrics, theta-gamma PAC
+
+## Specparam-Corrected Z-Scores
+
+Traditional QEEG z-scores are computed on raw band power, which conflates two distinct phenomena:
+
+- **Periodic (oscillatory) activity** — actual brain rhythms (alpha peaks, theta, etc.)
+- **Aperiodic (1/f) activity** — the broadband background noise floor
+
+A subject could have abnormal z-scores simply because their aperiodic slope differs from the norm, not because their oscillatory activity is abnormal. This package computes z-scores **both ways**:
+
+| Metric | Description | Use case |
+|--------|-------------|----------|
+| `absolute_power` | Traditional band power (includes 1/f) | Backward-compatible with legacy QEEG |
+| `corrected_absolute_power` | Periodic-only power (1/f removed via specparam) | More specific to oscillatory activity |
+| `relative_power` | Traditional relative power | Standard QEEG metric |
+| `corrected_relative_power` | Periodic-only relative power | Oscillation-specific relative comparison |
+
+The corrected metrics use [specparam](https://specparam-tools.github.io/) (formerly FOOOF) to fit and subtract the aperiodic component in log-power space before computing band power. This isolates oscillatory peaks from the 1/f background, giving clinically more meaningful z-scores.
 
 ## Supported Datasets
 
 | Dataset | Subjects | Ages | Channels | Status |
 |---------|----------|------|----------|--------|
 | LEMON | ~220 | 20–77 | 62 (BrainVision) | Implemented |
-| HBN | ~2500 | 5–21 | 128 (EGI) | Stub |
-| MIPDB | ~126 | 6–44 | 128 (EGI) | Stub |
+| HBN | ~2500 | 5–21 | 128 (EGI) | Implemented |
+| MIPDB | ~126 | 6–44 | 128 (EGI) | Implemented |
 
 ## Installation
 
@@ -134,6 +152,11 @@ results = compare_to_norms(
 for r in results:
     if abs(r.z_score or 0) > 2.0:
         print(f"{r.channel} {r.band} {r.metric}: z={r.z_score:.2f}")
+
+# Compare corrected (specparam) z-scores vs uncorrected
+for r in results:
+    if r.metric == "corrected_absolute_power" and abs(r.z_score or 0) > 2.0:
+        print(f"[corrected] {r.channel} {r.band}: z={r.z_score:.2f}")
 ```
 
 ## Normative Output Format
@@ -143,6 +166,7 @@ Each normative cell stores:
 - **Non-parametric stats**: percentiles at 1, 5, 10, 25, 50, 75, 90, 95, 99
 - **Quality indicators**: sample size (n), Shapiro-Wilk normality p-value
 - **Age bins**: Decade bins by default, configurable
+- **Dual metrics**: Both uncorrected and specparam-corrected band power for each cell
 
 ## Using with Coherence Workstation
 

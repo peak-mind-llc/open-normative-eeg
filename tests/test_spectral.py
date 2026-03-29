@@ -8,6 +8,7 @@ from open_normative.spectral import (
     compute_band_power,
     compute_band_ratios,
     compute_aperiodic,
+    compute_corrected_band_power,
     compute_asymmetry,
     analyze_spectral,
 )
@@ -93,12 +94,70 @@ def test_compute_asymmetry(mock_band_power):
             assert -1.0 <= asym[pair][band] <= 1.0
 
 
+def test_compute_corrected_band_power(synthetic_raw_19ch):
+    pytest.importorskip("specparam", reason="specparam not installed")
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    aperiodic = compute_aperiodic(psds, freqs, synthetic_raw_19ch.ch_names, params["aperiodic"])
+    corrected = compute_corrected_band_power(
+        psds, freqs, aperiodic, synthetic_raw_19ch.ch_names, params["bands"]
+    )
+    assert "Alpha" in corrected
+    assert "corrected_absolute" in corrected["Alpha"]
+    assert "corrected_relative" in corrected["Alpha"]
+    assert len(corrected["Alpha"]["corrected_absolute"]) == 19
+    # Corrected power should be non-negative (or NaN for failed fits)
+    for band in corrected:
+        vals = corrected[band]["corrected_absolute"]
+        finite_vals = vals[np.isfinite(vals)]
+        if len(finite_vals) > 0:
+            assert np.all(finite_vals >= 0)
+
+
+def test_corrected_power_differs_from_uncorrected(synthetic_raw_19ch):
+    """Corrected power should differ from uncorrected (aperiodic removed)."""
+    pytest.importorskip("specparam", reason="specparam not installed")
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    band_power = compute_band_power(psds, freqs, params["bands"])
+    aperiodic = compute_aperiodic(psds, freqs, synthetic_raw_19ch.ch_names, params["aperiodic"])
+    corrected = compute_corrected_band_power(
+        psds, freqs, aperiodic, synthetic_raw_19ch.ch_names, params["bands"]
+    )
+    # Corrected absolute should be smaller than uncorrected (aperiodic removed)
+    alpha_uncorrected = band_power["Alpha"]["absolute"]
+    alpha_corrected = corrected["Alpha"]["corrected_absolute"]
+    finite_mask = np.isfinite(alpha_corrected)
+    if np.any(finite_mask):
+        # Corrected power should be less than uncorrected (periodic < full PSD)
+        assert np.all(alpha_corrected[finite_mask] < alpha_uncorrected[finite_mask])
+
+
+def test_corrected_band_power_nan_on_failed_fit(synthetic_raw_19ch):
+    """Channels with failed specparam fits should get NaN corrected values."""
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    # Simulate all-failed aperiodic fits
+    ch_names = synthetic_raw_19ch.ch_names
+    failed_aperiodic = {ch: {
+        "exponent": np.nan, "offset": np.nan, "slope": np.nan,
+        "r_squared": 0.0, "fit_quality": "failed",
+    } for ch in ch_names}
+    corrected = compute_corrected_band_power(
+        psds, freqs, failed_aperiodic, ch_names, params["bands"]
+    )
+    for band in corrected:
+        assert np.all(np.isnan(corrected[band]["corrected_absolute"]))
+
+
 def test_analyze_spectral_returns_all_metrics(synthetic_raw_19ch):
     params = PIPELINE_PARAMS["spectral"]
     result = analyze_spectral(synthetic_raw_19ch, params)
     assert "psds" in result
     assert "freqs" in result
     assert "band_power" in result
+    assert "corrected_band_power" in result
     assert "ratios" in result
+    assert "corrected_ratios" in result
     assert "aperiodic" in result
     assert "asymmetry" in result

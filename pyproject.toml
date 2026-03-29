@@ -14,7 +14,7 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "pandas>=2.0",
-    "specparam>=1.0",
+    "specparam",
     "mne-icalabel>=0.4",
     "mne-connectivity>=0.5",
     "python-picard>=0.7",

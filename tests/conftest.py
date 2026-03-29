@@ -124,10 +124,14 @@ def mock_subject_metrics():
                     "Alpha": {
                         "absolute_power": float(rng.lognormal(1.0, 0.5)),
                         "relative_power": float(rng.beta(2, 5)),
+                        "corrected_absolute_power": float(rng.lognormal(0.5, 0.5)),
+                        "corrected_relative_power": float(rng.beta(2, 5)),
                     },
                     "Theta": {
                         "absolute_power": float(rng.lognormal(0.5, 0.4)),
                         "relative_power": float(rng.beta(2, 8)),
+                        "corrected_absolute_power": float(rng.lognormal(0.2, 0.4)),
+                        "corrected_relative_power": float(rng.beta(2, 8)),
                     },
                 },
             },

@@ -18,6 +18,7 @@ from scipy import stats
 # Metrics that are right-skewed and benefit from log-transformation.
 _LOG_TRANSFORM_METRICS = {
     "absolute_power",
+    "corrected_absolute_power",
     "Theta/Beta",
     "Theta/Beta1",
     "Delta/HighBeta",

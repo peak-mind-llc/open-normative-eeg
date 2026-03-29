@@ -42,3 +42,5 @@ def test_metrics_result_to_nested_dict(synthetic_raw_19ch):
     assert "Alpha" in nested["Fz"]
     assert "absolute_power" in nested["Fz"]["Alpha"]
     assert "relative_power" in nested["Fz"]["Alpha"]
+    assert "corrected_absolute_power" in nested["Fz"]["Alpha"]
+    assert "corrected_relative_power" in nested["Fz"]["Alpha"]
