@@ -73,19 +73,31 @@ class LEMONLoader(DatasetLoader):
         """
         participants = self._load_participants(data_dir)
 
-        # Support both BIDS-like "eeg/" and the raw LEMON download's "RSEEG/" layout
+        # Support multiple directory layouts:
+        #   sub-*/eeg/*.vhdr           (BIDS standard)
+        #   sub-*/RSEEG/*.vhdr         (GWDG raw download)
+        #   sub-*/ses-*/eeg/*.vhdr     (OpenNeuro ds000221 with sessions)
         vhdr_files = sorted(
-            set(data_dir.glob("sub-*/eeg/*.vhdr")) | set(data_dir.glob("sub-*/RSEEG/*.vhdr"))
+            set(data_dir.glob("sub-*/eeg/*.vhdr"))
+            | set(data_dir.glob("sub-*/RSEEG/*.vhdr"))
+            | set(data_dir.glob("sub-*/ses-*/eeg/*.vhdr"))
         )
 
         if not vhdr_files:
-            logger.warning("No .vhdr files found in %s/sub-*/{eeg,RSEEG}/", data_dir)
+            logger.warning("No .vhdr files found in %s/sub-*/{eeg,RSEEG,ses-*/eeg}/", data_dir)
             return
 
         logger.info("Found %d .vhdr files", len(vhdr_files))
 
         for vhdr_path in vhdr_files:
-            subject_id = vhdr_path.parts[-3]  # sub-XXXXXXX (directory name)
+            # Extract subject ID from path — handle both sub-*/eeg/ and sub-*/ses-*/eeg/
+            subject_id = None
+            for part in vhdr_path.parts:
+                if part.startswith("sub-"):
+                    subject_id = part
+            if subject_id is None:
+                logger.warning("Could not extract subject ID from %s", vhdr_path)
+                continue
 
             # The BIDS download may remap subject IDs (e.g. sub-032301 dirs
             # contain files originally named sub-010002).  Extract the original
