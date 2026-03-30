@@ -111,11 +111,12 @@ def check_integrity(raw, eeg_path):
     n_ch = len(raw.ch_names)
     duration = raw.times[-1]
 
-    # Parse paradigm from BIDS filename
+    # Parse paradigm from BIDS filename (HBN EEG protocol)
     paradigm = "unknown"
     name = Path(eeg_path).name.upper()
-    for tag in ("REST", "RESTEO", "RESTEC", "ODDBALL", "FLANKER",
-                "SURROUND", "FACES", "VIDEO", "CONTRAST"):
+    for tag in ("RESTEO", "RESTEC", "REST",
+                "SEQUENCE", "SYMBOLSEARCH", "SURROUND",
+                "CONTRAST", "VIDEO"):
         if tag in name:
             paradigm = tag.lower()
             break
@@ -321,7 +322,13 @@ def load_cbcl(phenotypic_dir):
 
 
 def load_participants(data_dir):
-    """Parse participants.tsv for demographics."""
+    """Parse participants.tsv for demographics and commercial use flag.
+
+    HBN distributes most data under CC-BY-4.0 (commercial OK), but a
+    subset is CC-BY-NC-SA (no commercial use).  The "Commercial_Use"
+    column in the metadata file indicates this ("Yes"/"No").  We also
+    check participants.tsv in case the column lives there.
+    """
     tsv = Path(data_dir) / "participants.tsv"
     if not tsv.exists():
         logger.warning("participants.tsv not found at %s", tsv)
@@ -342,8 +349,76 @@ def load_participants(data_dir):
             raw_sex = row.get("sex", row.get("gender", "")).strip().upper()
             sex = "M" if raw_sex.startswith("M") else (
                 "F" if raw_sex.startswith("F") else raw_sex)
-            participants[sid] = {"age": age, "sex": sex}
+            # Commercial use flag (CC-BY-4.0 vs CC-BY-NC-SA)
+            commercial = row.get("Commercial_Use",
+                                 row.get("commercial_use", "")).strip()
+            participants[sid] = {
+                "age": age,
+                "sex": sex,
+                "commercial_use": commercial.upper() != "NO",
+            }
+
+    # If Commercial_Use wasn't in participants.tsv, try separate metadata file
+    has_flag = any(row.get("Commercial_Use") or row.get("commercial_use")
+                   for row in [{}])  # placeholder — detected from header presence
+    # Try loading from phenotypic metadata files if all are default True
+    all_true = all(p["commercial_use"] for p in participants.values())
+    if all_true and len(participants) > 0:
+        _load_commercial_use_flags(data_dir, participants)
+
+    no_commercial = sum(1 for p in participants.values()
+                        if not p["commercial_use"])
+    if no_commercial:
+        logger.info("%d subjects flagged as no commercial use", no_commercial)
+
     return participants
+
+
+def _load_commercial_use_flags(data_dir, participants):
+    """Try to find Commercial_Use flags from metadata/phenotypic files."""
+    search_dirs = [
+        Path(data_dir),
+        Path(data_dir) / "phenotypic",
+    ]
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        for f in sorted(d.glob("*.csv")) + sorted(d.glob("*.tsv")):
+            try:
+                delim = "\t" if f.suffix == ".tsv" else ","
+                with f.open(newline="", encoding="utf-8") as fh:
+                    lines = [l for l in fh if not l.startswith("#")]
+                if not lines:
+                    continue
+                import io
+                reader = csv.DictReader(io.StringIO("".join(lines)),
+                                        delimiter=delim)
+                headers = reader.fieldnames or []
+                cu_col = next((c for c in headers
+                               if c.lower() == "commercial_use"), None)
+                id_col = next((c for c in headers
+                               if c.lower() in ("participant_id", "eid",
+                                                 "subjectkey", "subject")),
+                              None)
+                if cu_col is None or id_col is None:
+                    continue
+
+                logger.info("Loading Commercial_Use from %s", f.name)
+                count = 0
+                for row in reader:
+                    sid = row.get(id_col, "").strip()
+                    if not sid.startswith("sub-"):
+                        sid = f"sub-{sid}"
+                    if sid in participants:
+                        val = row.get(cu_col, "").strip()
+                        participants[sid]["commercial_use"] = val.upper() != "NO"
+                        count += 1
+                if count:
+                    logger.info("Updated commercial use flags for %d subjects",
+                                count)
+                    return  # done, found the file
+            except Exception:
+                continue
 
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
@@ -411,11 +486,12 @@ def qc_one_subject(subject_id, eeg_files, face_neck_chs):
     if resting_file is None:
         resting_file = eeg_files[0]
 
-    # Record all paradigms
+    # Record all paradigms (HBN EEG protocol)
     for p in eeg_files:
         name = Path(p).name.upper()
-        for tag in ("RESTEO", "RESTEC", "REST", "ODDBALL", "FLANKER",
-                    "SURROUND", "FACES", "VIDEO", "CONTRAST"):
+        for tag in ("RESTEO", "RESTEC", "REST",
+                    "SEQUENCE", "SYMBOLSEARCH", "SURROUND",
+                    "CONTRAST", "VIDEO"):
             if tag in name:
                 result["paradigms"].append(tag.lower())
                 break
@@ -597,6 +673,21 @@ def generate_summary(output_dir, results, cbcl_data, participants):
         lines.append(f"| T < {thresh} | {eligible} | {excluded_cbcl} | {no_data} |")
         best_threshold_eligible[thresh] = eligible_ids
     lines.append("")
+
+    # ── Commercial use licensing ──
+    commercial_yes = sum(1 for sid in ready_ids
+                         if participants.get(sid, {}).get("commercial_use", True))
+    commercial_no = sum(1 for sid in ready_ids
+                        if not participants.get(sid, {}).get("commercial_use", True))
+    if commercial_no:
+        lines += [
+            "## Commercial Use Licensing", "",
+            "HBN data is mostly CC-BY-4.0 (commercial OK), but a subset is "
+            "CC-BY-NC-SA (no commercial use). Among QC-ready subjects:", "",
+            f"- **Commercial use allowed:** {commercial_yes}",
+            f"- **No commercial use:** {commercial_no}",
+            "",
+        ]
 
     # ── Age x sex distribution ──
     lines += ["## Age x Sex Distribution (QC-Ready Subjects)", ""]
