@@ -146,36 +146,34 @@ class LEMONLoader(DatasetLoader):
 
     @staticmethod
     def _load_participants(data_dir: Path) -> dict[str, dict]:
-        """Load participant demographics from the META CSV or participants.tsv.
+        """Load participant demographics from all available files.
 
-        Tries the LEMON META CSV first (the file shipped with the GWDG
-        download), then falls back to BIDS-style participants.tsv.
+        Loads the META CSV and participants.tsv/txt and merges them so that
+        both original IDs (sub-010002) and BIDS-remapped IDs (sub-032301)
+        are covered.  The META CSV takes priority when both have the same key.
         """
-        # Try the META CSV first (shipped with GWDG LEMON download)
-        meta_path = data_dir / _META_CSV_NAME
-        if meta_path.exists():
-            return LEMONLoader._load_meta_csv(meta_path)
+        participants: dict[str, dict] = {}
 
-        # Also check parent directory (META CSV might be one level up)
-        parent_meta = data_dir.parent / _META_CSV_NAME
-        if parent_meta.exists():
-            return LEMONLoader._load_meta_csv(parent_meta)
-
-        # Fall back to BIDS participants.tsv or .txt
+        # Load participants.tsv or .txt first (lower priority)
         for ext in ("participants.tsv", "participants.txt"):
             tsv_path = data_dir / ext
             if tsv_path.exists():
-                return LEMONLoader._load_participants_tsv(tsv_path)
+                participants.update(LEMONLoader._load_participants_tsv(tsv_path))
+                break
 
-        logger.warning(
-            "No demographics file found. Looked for:\n"
-            "  %s\n"
-            "  %s (or .txt)\n"
-            "Subjects will have age=NaN and won't be assigned to age bins.",
-            meta_path,
-            data_dir / "participants.tsv",
-        )
-        return {}
+        # Load META CSV (higher priority — overwrites tsv entries for same ID)
+        for meta_path in (data_dir / _META_CSV_NAME, data_dir.parent / _META_CSV_NAME):
+            if meta_path.exists():
+                participants.update(LEMONLoader._load_meta_csv(meta_path))
+                break
+
+        if not participants:
+            logger.warning(
+                "No demographics file found in %s. "
+                "Subjects will have age=NaN and won't be assigned to age bins.",
+                data_dir,
+            )
+        return participants
 
     @staticmethod
     def _load_meta_csv(meta_path: Path) -> dict[str, dict]:
