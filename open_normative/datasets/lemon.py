@@ -98,6 +98,13 @@ class LEMONLoader(DatasetLoader):
             age = info.get("age", float("nan"))
             sex = info.get("sex", "")
 
+            import math
+            if math.isnan(age):
+                logger.warning(
+                    "No demographics found for %s (original ID: %s) — age will be NaN",
+                    subject_id, original_id,
+                )
+
             # Try to detect condition from filename
             condition = self._detect_condition(vhdr_path.name)
 
