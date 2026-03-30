@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -93,7 +94,8 @@ class LEMONLoader(DatasetLoader):
             condition = self._detect_condition(vhdr_path.name)
 
             try:
-                raw = mne.io.read_raw_brainvision(str(vhdr_path), preload=True, verbose=False)
+                load_path = _fix_vhdr_refs(vhdr_path)
+                raw = mne.io.read_raw_brainvision(str(load_path), preload=True, verbose=False)
             except Exception:
                 logger.warning("Failed to load %s", vhdr_path, exc_info=True)
                 continue
@@ -259,6 +261,52 @@ class LEMONLoader(DatasetLoader):
         if "EO" in upper:
             return "eo"
         return None
+
+
+def _fix_vhdr_refs(vhdr_path: Path) -> Path:
+    """Fix mismatched internal file references in a BrainVision .vhdr file.
+
+    The LEMON BIDS download renames subject files (e.g. sub-010002 → sub-032301)
+    but the .vhdr header still references the original .vmrk and .eeg filenames.
+    This function checks if the referenced files exist; if not, it writes a
+    patched copy to a temp file with corrected references.
+    """
+    stem = vhdr_path.stem
+    parent = vhdr_path.parent
+    text = vhdr_path.read_text(encoding="utf-8")
+
+    needs_patch = False
+    for key in ("DataFile=", "MarkerFile="):
+        for line in text.splitlines():
+            if line.startswith(key):
+                ref_name = line[len(key):].strip()
+                if not (parent / ref_name).exists():
+                    needs_patch = True
+                    break
+
+    if not needs_patch:
+        return vhdr_path
+
+    # Rewrite DataFile and MarkerFile to use the current filename stem
+    patched_lines = []
+    for line in text.splitlines():
+        if line.startswith("DataFile="):
+            old_ref = line.split("=", 1)[1].strip()
+            ext = Path(old_ref).suffix  # .eeg
+            patched_lines.append(f"DataFile={stem}{ext}")
+        elif line.startswith("MarkerFile="):
+            old_ref = line.split("=", 1)[1].strip()
+            ext = Path(old_ref).suffix  # .vmrk
+            patched_lines.append(f"MarkerFile={stem}{ext}")
+        else:
+            patched_lines.append(line)
+
+    # Write patched .vhdr next to the original (as a temp file in the same dir
+    # so that relative paths to .eeg/.vmrk still resolve)
+    patched_path = parent / f".{stem}_patched.vhdr"
+    patched_path.write_text("\n".join(patched_lines), encoding="utf-8")
+    logger.debug("Patched .vhdr references: %s → %s", vhdr_path.name, patched_path.name)
+    return patched_path
 
 
 # LEMON stimulus markers for resting-state conditions
