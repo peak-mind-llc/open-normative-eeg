@@ -96,27 +96,73 @@ norms_output/
 
 #### 1. Download LEMON EEG data
 
-The data is hosted at `https://ftp.gwdg.de/pub/misc/MPI-Leipzig_Mind-Brain-Body-LEMON/`. You need two things:
+The data is hosted at `https://ftp.gwdg.de/pub/misc/MPI-Leipzig_Mind-Brain-Body-LEMON/`. The FTP directory contains many subdirectories — here's what's in there and what you actually need:
 
-**EEG recordings:** Download from `EEG_MPILMBB_LEMON/EEG_Raw_BIDS_ID/`. This contains the BrainVision `.vhdr`/`.vmrk`/`.eeg` files organized as `sub-XXXXXX/RSEEG/`.
+```
+MPI-Leipzig_Mind-Brain-Body-LEMON/
+├── Behavioural_Data_MPILMBB_LEMON/          ← demographics file is here
+│   ├── META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv  ← NEED THIS
+│   ├── Emotion/
+│   ├── Personality/
+│   ├── Cognitive/
+│   └── ... (other behavioral data — not needed)
+│
+├── EEG_MPILMBB_LEMON/
+│   ├── EEG_Raw_BIDS_ID/                     ← raw EEG recordings are here
+│   │   ├── sub-010002/RSEEG/                ← NEED THESE
+│   │   │   ├── sub-010002_task-rest_EO_eeg.vhdr
+│   │   │   ├── sub-010002_task-rest_EO_eeg.vmrk
+│   │   │   ├── sub-010002_task-rest_EO_eeg.eeg
+│   │   │   ├── sub-010002_task-rest_EC_eeg.vhdr
+│   │   │   ├── sub-010002_task-rest_EC_eeg.vmrk
+│   │   │   └── sub-010002_task-rest_EC_eeg.eeg
+│   │   ├── sub-010004/RSEEG/
+│   │   └── ... (~220 subjects)
+│   │
+│   ├── EEG_Preprocessed_BIDS_ID/            ← preprocessed data (not needed — we run our own pipeline)
+│   └── EEG_MPILMBB_LEMON_README.pdf
+│
+├── MRI_MPILMBB_LEMON/                       ← MRI data (not needed)
+├── INDI_retro_LEMON/                         ← retrospective data (not needed)
+└── ... (other modalities — not needed)
+```
 
-**Demographics file (required for age binning):** The EEG download does **not** include a `participants.tsv`. You need the META CSV from the behavioral data archive:
+**You only need to download two things:**
 
-- Download `META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv` from `Behavioural_Data_MPILMBB_LEMON/` on the same FTP server.
-- Place it at the root of your data directory (next to the `sub-*/` folders).
+1. **EEG recordings** — the entire `EEG_MPILMBB_LEMON/EEG_Raw_BIDS_ID/` directory. This is the raw BrainVision data (~220 subjects, each with Eyes Open and Eyes Closed `.vhdr`/`.vmrk`/`.eeg` files). Each subject folder contains a `RSEEG/` subdirectory with the resting-state files.
 
-Alternatively, if you have the OpenNeuro version ([ds000221](https://openneuro.org/datasets/ds000221)), its `participants.tsv` is also supported (download it from `https://github.com/OpenNeuroDatasets/ds000221/blob/master/participants.tsv`).
+2. **Demographics file** — the single file `META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv` from inside `Behavioural_Data_MPILMBB_LEMON/`. This CSV contains subject ID, age (as 5-year bins like `20-25`), and gender (`1`=female, `2`=male). **The EEG download does NOT include a `participants.tsv`** — without this META CSV, subjects will have `age=NaN` and won't be assigned to age bins.
+
+You can skip everything else (MRI, preprocessed EEG, personality questionnaires, etc.).
+
+**Alternative demographics source:** If you have the OpenNeuro version ([ds000221](https://openneuro.org/datasets/ds000221)), its `participants.tsv` is also supported (download it from `https://github.com/OpenNeuroDatasets/ds000221/blob/master/participants.tsv`).
 
 #### 2. Organize the data directory
 
-Rename the `RSEEG/` subdirectories to `eeg/` to match the expected layout:
+Place the META CSV at the root of your data directory (next to the `sub-*/` folders). **No renaming is needed** — the loader supports both the original `RSEEG/` subdirectory names and the BIDS-standard `eeg/` names.
 
+```bash
+# Copy the demographics CSV into the EEG data directory
+cp /path/to/Behavioural_Data_MPILMBB_LEMON/META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv /path/to/EEG_Raw_BIDS_ID/
+```
+
+Your directory should look like this (works as-is from the FTP download):
 ```
 lemon/
   META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv
-  sub-010002/eeg/sub-010002_task-rest_EO_eeg.vhdr
-  sub-010002/eeg/sub-010002_task-rest_EC_eeg.vhdr
+  sub-010002/RSEEG/sub-010002_task-rest_EO_eeg.vhdr
+  sub-010002/RSEEG/sub-010002_task-rest_EO_eeg.vmrk
+  sub-010002/RSEEG/sub-010002_task-rest_EO_eeg.eeg
+  sub-010002/RSEEG/sub-010002_task-rest_EC_eeg.vhdr
+  sub-010002/RSEEG/sub-010002_task-rest_EC_eeg.vmrk
+  sub-010002/RSEEG/sub-010002_task-rest_EC_eeg.eeg
+  sub-010004/RSEEG/...
   ...
+```
+
+Optionally, you can rename `RSEEG/` to `eeg/` for BIDS compliance:
+```bash
+for d in sub-*/RSEEG; do mv "$d" "$(dirname "$d")/eeg"; done
 ```
 
 The loader auto-detects the META CSV and parses age (5-year range bins like `20-25`, converted to midpoint `22.5`), sex (`1`=female, `2`=male), and subject IDs (`sub-XXXXXX`).

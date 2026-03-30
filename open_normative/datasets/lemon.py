@@ -64,7 +64,11 @@ class LEMONLoader(DatasetLoader):
         """
         participants = self._load_participants(data_dir)
 
-        for vhdr_path in sorted(data_dir.glob("sub-*/eeg/*.vhdr")):
+        # Support both BIDS-like "eeg/" and the raw LEMON download's "RSEEG/" layout
+        vhdr_files = sorted(
+            set(data_dir.glob("sub-*/eeg/*.vhdr")) | set(data_dir.glob("sub-*/RSEEG/*.vhdr"))
+        )
+        for vhdr_path in vhdr_files:
             subject_id = vhdr_path.parts[-3]  # sub-XXXXXXX
             condition = self._detect_condition(vhdr_path.name)
             if condition is None:
@@ -124,18 +128,19 @@ class LEMONLoader(DatasetLoader):
         if parent_meta.exists():
             return LEMONLoader._load_meta_csv(parent_meta)
 
-        # Fall back to BIDS participants.tsv
-        tsv_path = data_dir / "participants.tsv"
-        if tsv_path.exists():
-            return LEMONLoader._load_participants_tsv(tsv_path)
+        # Fall back to BIDS participants.tsv or .txt
+        for ext in ("participants.tsv", "participants.txt"):
+            tsv_path = data_dir / ext
+            if tsv_path.exists():
+                return LEMONLoader._load_participants_tsv(tsv_path)
 
         logger.warning(
             "No demographics file found. Looked for:\n"
             "  %s\n"
-            "  %s\n"
+            "  %s (or .txt)\n"
             "Subjects will have age=NaN and won't be assigned to age bins.",
             meta_path,
-            tsv_path,
+            data_dir / "participants.tsv",
         )
         return {}
 
