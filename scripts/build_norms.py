@@ -135,6 +135,13 @@ def main():
         default=[20, 30, 40, 50, 60, 70, 80],
         help="Age bin edges (default: decade bins 20-80)",
     )
+    parser.add_argument(
+        "--qc-dir",
+        type=Path,
+        default=None,
+        help="Path to QC output directory (from lemon_qc.py). "
+             "If provided, only subjects in ready.txt are processed.",
+    )
     args = parser.parse_args()
 
     # Setup output directory
@@ -153,6 +160,16 @@ def main():
     # Initialize dataset loader
     LoaderClass = DATASETS[args.dataset]
     loader = LoaderClass()
+
+    # Load QC allow-list if provided
+    qc_allow = None
+    if args.qc_dir:
+        ready_path = args.qc_dir / "ready.txt"
+        if ready_path.exists():
+            qc_allow = set(ready_path.read_text().strip().splitlines())
+            logger.info(f"QC filter: {len(qc_allow)} subjects in {ready_path}")
+        else:
+            logger.warning(f"QC dir provided but {ready_path} not found — processing all subjects")
 
     # Count and filter subjects
     logger.info(f"Scanning {args.data_dir} for {args.dataset} subjects...")
@@ -175,9 +192,15 @@ def main():
     subjects_for_norms = []
 
     # Process subjects
+    qc_skipped = 0
     for record in subject_iter:
         # Filter by condition
         if args.condition != "both" and record.condition != args.condition:
+            continue
+
+        # Filter by QC allow-list
+        if qc_allow is not None and record.subject_id not in qc_allow:
+            qc_skipped += 1
             continue
 
         checkpoint_key = f"{record.subject_id}_{record.condition}"
@@ -233,10 +256,10 @@ def main():
         del record
 
     elapsed_total = time.time() - start_time
-    logger.info(
-        f"\nProcessing complete: {processed} processed, {skipped} resumed from checkpoint, "
-        f"{errors} errors, {elapsed_total / 60:.1f} min total"
-    )
+    parts = [f"{processed} processed", f"{skipped} resumed from checkpoint", f"{errors} errors"]
+    if qc_skipped:
+        parts.append(f"{qc_skipped} excluded by QC")
+    logger.info(f"\nProcessing complete: {', '.join(parts)}, {elapsed_total / 60:.1f} min total")
 
     # Build normative distributions
     if not subjects_for_norms:
