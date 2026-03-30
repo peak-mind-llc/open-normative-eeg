@@ -96,26 +96,32 @@ norms_output/
 
 #### 1. Download LEMON EEG data
 
-The data is hosted on an FTP server. Download the EEG portion and the participants file:
+The data is hosted at `https://ftp.gwdg.de/pub/misc/MPI-Leipzig_Mind-Brain-Body-LEMON/`. You need two things:
 
-1. Go to [the LEMON site](https://fcon_1000.projects.nitrc.org/indi/retro/MPI_LEMON.html) and follow the download links, or access the FTP server directly at `ftp://ftp.gwdg.de/pub/misc/MPI-Leipzig_Mind-Body-Emotion/`.
-2. Download the EEG BIDS archive (contains `.vhdr`/`.vmrk`/`.eeg` files per subject).
-3. Download `participants.tsv` (contains age, sex per subject).
-4. Extract the archive into a single directory.
+**EEG recordings:** Download from `EEG_MPILMBB_LEMON/EEG_Raw_BIDS_ID/`. This contains the BrainVision `.vhdr`/`.vmrk`/`.eeg` files organized as `sub-XXXXXX/RSEEG/`.
 
-#### 2. Verify the BIDS layout
+**Demographics file (required for age binning):** The EEG download does **not** include a `participants.tsv`. You need the META CSV from the behavioral data archive:
 
-The loader expects this structure:
+- Download `META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv` from `Behavioural_Data_MPILMBB_LEMON/` on the same FTP server.
+- Place it at the root of your data directory (next to the `sub-*/` folders).
+
+Alternatively, if you have the OpenNeuro version ([ds000221](https://openneuro.org/datasets/ds000221)), its `participants.tsv` is also supported (download it from `https://github.com/OpenNeuroDatasets/ds000221/blob/master/participants.tsv`).
+
+#### 2. Organize the data directory
+
+Rename the `RSEEG/` subdirectories to `eeg/` to match the expected layout:
 
 ```
 lemon/
-  participants.tsv
+  META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv
   sub-010002/eeg/sub-010002_task-rest_EO_eeg.vhdr
   sub-010002/eeg/sub-010002_task-rest_EC_eeg.vhdr
   ...
 ```
 
-Each subject has separate files for Eyes Open (EO) and Eyes Closed (EC). The 62-channel 10-10 names (e.g., T7, T8, P7, P8) are automatically mapped to the standard 19-channel 10-20 montage (T3, T4, T5, T6) by name matching.
+The loader auto-detects the META CSV and parses age (5-year range bins like `20-25`, converted to midpoint `22.5`), sex (`1`=female, `2`=male), and subject IDs (`sub-XXXXXX`).
+
+The 62-channel 10-10 names (T7, T8, P7, P8, etc.) are automatically mapped to the standard 19-channel 10-20 montage by name matching.
 
 #### 3. Build norms
 
