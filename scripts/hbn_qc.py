@@ -425,49 +425,87 @@ def load_cbcl(phenotypic_dir):
 
 
 def load_participants(data_dir):
-    """Parse participants.tsv for demographics and commercial use flag.
+    """Parse participants.tsv for demographics, licensing, and task flags.
 
-    HBN distributes most data under CC-BY-4.0 (commercial OK), but a
-    subset is CC-BY-NC-SA (no commercial use).  The "Commercial_Use"
-    column in the metadata file indicates this ("Yes"/"No").  We also
-    check participants.tsv in case the column lives there.
+    The HBN BIDS participants.tsv contains:
+    - participant_id, sex, age, ehq_total (handedness)
+    - commercial_use ("Yes"/"No") — CC-BY-4.0 vs CC-BY-NC-SA
+    - p_factor, attention, internalizing, externalizing — dimensional
+      psychiatric scores (useful for normative filtering)
+    - Task completion flags: RestingState, contrastChangeDetection_1, etc.
+
+    Searches data_dir and any cmi_bids_R*/ subdirectories for
+    participants.tsv files.
     """
-    tsv = Path(data_dir) / "participants.tsv"
-    if not tsv.exists():
-        logger.warning("participants.tsv not found at %s", tsv)
+    # Collect participants.tsv from root and/or release subdirs
+    tsv_paths = []
+    root_tsv = Path(data_dir) / "participants.tsv"
+    if root_tsv.exists():
+        tsv_paths.append(root_tsv)
+    for release_dir in sorted(Path(data_dir).glob("cmi_bids_R*")):
+        rd_tsv = release_dir / "participants.tsv"
+        if rd_tsv.exists():
+            tsv_paths.append(rd_tsv)
+
+    if not tsv_paths:
+        logger.warning("No participants.tsv found in %s", data_dir)
         return {}
 
     participants = {}
-    with tsv.open(newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh, delimiter="\t")
-        for row in reader:
-            sid = row.get("participant_id", "").strip()
-            if not sid:
-                continue
-            raw_age = row.get("age", "").strip()
-            try:
-                age = float(raw_age)
-            except (ValueError, TypeError):
-                age = float("nan")
-            raw_sex = row.get("sex", row.get("gender", "")).strip().upper()
-            sex = "M" if raw_sex.startswith("M") else (
-                "F" if raw_sex.startswith("F") else raw_sex)
-            # Commercial use flag (CC-BY-4.0 vs CC-BY-NC-SA)
-            commercial = row.get("Commercial_Use",
-                                 row.get("commercial_use", "")).strip()
-            participants[sid] = {
-                "age": age,
-                "sex": sex,
-                "commercial_use": commercial.upper() != "NO",
-            }
+    for tsv in tsv_paths:
+        with tsv.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                sid = row.get("participant_id", "").strip()
+                if not sid:
+                    continue
+                raw_age = row.get("age", "").strip()
+                try:
+                    age = float(raw_age)
+                except (ValueError, TypeError):
+                    age = float("nan")
+                raw_sex = row.get("sex", row.get("gender", "")).strip().upper()
+                sex = "M" if raw_sex.startswith("M") else (
+                    "F" if raw_sex.startswith("F") else raw_sex)
 
-    # If Commercial_Use wasn't in participants.tsv, try separate metadata file
-    has_flag = any(row.get("Commercial_Use") or row.get("commercial_use")
-                   for row in [{}])  # placeholder — detected from header presence
-    # Try loading from phenotypic metadata files if all are default True
-    all_true = all(p["commercial_use"] for p in participants.values())
-    if all_true and len(participants) > 0:
-        _load_commercial_use_flags(data_dir, participants)
+                # Commercial use flag
+                commercial = row.get("commercial_use",
+                                     row.get("Commercial_Use", "")).strip()
+                # Handedness (Edinburgh Handedness Questionnaire)
+                try:
+                    ehq = float(row.get("ehq_total", "").strip())
+                except (ValueError, TypeError):
+                    ehq = float("nan")
+
+                # Dimensional psychiatric scores
+                psych = {}
+                for col in ("p_factor", "attention", "internalizing",
+                            "externalizing"):
+                    try:
+                        psych[col] = float(row.get(col, "").strip())
+                    except (ValueError, TypeError):
+                        pass
+
+                # Task completion flags
+                tasks = {}
+                for col in ("RestingState", "contrastChangeDetection_1",
+                            "contrastChangeDetection_2",
+                            "contrastChangeDetection_3",
+                            "surroundSupp_1", "surroundSupp_2",
+                            "seqLearning6target", "seqLearning8target",
+                            "symbolSearch"):
+                    val = row.get(col, "").strip()
+                    if val:
+                        tasks[col] = val
+
+                participants[sid] = {
+                    "age": age,
+                    "sex": sex,
+                    "commercial_use": commercial.upper() != "NO",
+                    "ehq_total": ehq,
+                    **psych,
+                    "tasks": tasks,
+                }
 
     no_commercial = sum(1 for p in participants.values()
                         if not p["commercial_use"])
@@ -476,52 +514,6 @@ def load_participants(data_dir):
 
     return participants
 
-
-def _load_commercial_use_flags(data_dir, participants):
-    """Try to find Commercial_Use flags from metadata/phenotypic files."""
-    search_dirs = [
-        Path(data_dir),
-        Path(data_dir) / "phenotypic",
-    ]
-    for d in search_dirs:
-        if not d.exists():
-            continue
-        for f in sorted(d.glob("*.csv")) + sorted(d.glob("*.tsv")):
-            try:
-                delim = "\t" if f.suffix == ".tsv" else ","
-                with f.open(newline="", encoding="utf-8") as fh:
-                    lines = [l for l in fh if not l.startswith("#")]
-                if not lines:
-                    continue
-                import io
-                reader = csv.DictReader(io.StringIO("".join(lines)),
-                                        delimiter=delim)
-                headers = reader.fieldnames or []
-                cu_col = next((c for c in headers
-                               if c.lower() == "commercial_use"), None)
-                id_col = next((c for c in headers
-                               if c.lower() in ("participant_id", "eid",
-                                                 "subjectkey", "subject")),
-                              None)
-                if cu_col is None or id_col is None:
-                    continue
-
-                logger.info("Loading Commercial_Use from %s", f.name)
-                count = 0
-                for row in reader:
-                    sid = row.get(id_col, "").strip()
-                    if not sid.startswith("sub-"):
-                        sid = f"sub-{sid}"
-                    if sid in participants:
-                        val = row.get(cu_col, "").strip()
-                        participants[sid]["commercial_use"] = val.upper() != "NO"
-                        count += 1
-                if count:
-                    logger.info("Updated commercial use flags for %d subjects",
-                                count)
-                    return  # done, found the file
-            except Exception:
-                continue
 
 
 # ── Verdict ──────────────────────────────────────────────────────────────────
