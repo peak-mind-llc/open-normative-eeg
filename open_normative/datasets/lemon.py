@@ -266,44 +266,65 @@ class LEMONLoader(DatasetLoader):
 def _fix_vhdr_refs(vhdr_path: Path) -> Path:
     """Fix mismatched internal file references in a BrainVision .vhdr file.
 
-    The LEMON BIDS download renames subject files (e.g. sub-010002 → sub-032301)
-    but the .vhdr header still references the original .vmrk and .eeg filenames.
-    This function checks if the referenced files exist; if not, it writes a
-    patched copy to a temp file with corrected references.
+    The LEMON BIDS download renames the .vhdr file (e.g. sub-010002 → sub-032301)
+    but the .vmrk and .eeg files keep their original names, AND the .vhdr header
+    still references the original filenames.  When the referenced files don't
+    exist at the expected path, this function searches for the actual .vmrk and
+    .eeg files in the same directory and writes a patched .vhdr copy.
     """
-    stem = vhdr_path.stem
     parent = vhdr_path.parent
     text = vhdr_path.read_text(encoding="utf-8")
 
+    # Check which references are broken
+    ref_keys = {"DataFile": None, "MarkerFile": None}
     needs_patch = False
-    for key in ("DataFile=", "MarkerFile="):
-        for line in text.splitlines():
-            if line.startswith(key):
-                ref_name = line[len(key):].strip()
+    for line in text.splitlines():
+        for key in ref_keys:
+            prefix = f"{key}="
+            if line.startswith(prefix):
+                ref_name = line[len(prefix):].strip()
+                ref_keys[key] = ref_name
                 if not (parent / ref_name).exists():
                     needs_patch = True
-                    break
 
     if not needs_patch:
         return vhdr_path
 
-    # Rewrite DataFile and MarkerFile to use the current filename stem
+    # Find the actual files in the directory by extension
+    def _find_file(ext: str) -> str | None:
+        candidates = list(parent.glob(f"*{ext}"))
+        # Exclude our own patched files
+        candidates = [c for c in candidates if not c.name.startswith(".")]
+        if len(candidates) == 1:
+            return candidates[0].name
+        # Multiple candidates — try to match by the stem referenced in .vhdr
+        if ref_keys.get("DataFile" if ext == ".eeg" else "MarkerFile"):
+            old_stem = Path(ref_keys["DataFile" if ext == ".eeg" else "MarkerFile"]).stem
+            for c in candidates:
+                if c.stem == old_stem:
+                    return c.name
+        return None
+
     patched_lines = []
     for line in text.splitlines():
         if line.startswith("DataFile="):
-            old_ref = line.split("=", 1)[1].strip()
-            ext = Path(old_ref).suffix  # .eeg
-            patched_lines.append(f"DataFile={stem}{ext}")
+            actual = _find_file(".eeg")
+            if actual and not (parent / line.split("=", 1)[1].strip()).exists():
+                patched_lines.append(f"DataFile={actual}")
+                logger.debug("  DataFile: %s → %s", line.split("=", 1)[1].strip(), actual)
+            else:
+                patched_lines.append(line)
         elif line.startswith("MarkerFile="):
-            old_ref = line.split("=", 1)[1].strip()
-            ext = Path(old_ref).suffix  # .vmrk
-            patched_lines.append(f"MarkerFile={stem}{ext}")
+            actual = _find_file(".vmrk")
+            if actual and not (parent / line.split("=", 1)[1].strip()).exists():
+                patched_lines.append(f"MarkerFile={actual}")
+                logger.debug("  MarkerFile: %s → %s", line.split("=", 1)[1].strip(), actual)
+            else:
+                patched_lines.append(line)
         else:
             patched_lines.append(line)
 
-    # Write patched .vhdr next to the original (as a temp file in the same dir
-    # so that relative paths to .eeg/.vmrk still resolve)
-    patched_path = parent / f".{stem}_patched.vhdr"
+    patched_path = parent / f".{vhdr_path.stem}_patched.vhdr"
     patched_path.write_text("\n".join(patched_lines), encoding="utf-8")
     logger.debug("Patched .vhdr references: %s → %s", vhdr_path.name, patched_path.name)
     return patched_path
