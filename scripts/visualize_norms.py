@@ -226,6 +226,116 @@ def render_power_heatmap(df, condition, age_bin, metric="absolute_power",
 
 
 # ---------------------------------------------------------------------------
+# Connectivity visualization
+# ---------------------------------------------------------------------------
+
+CONN_BANDS = ["Delta", "Theta", "Alpha", "Beta", "HighBeta", "Gamma"]
+
+HUB_NAMES = ["F_mid", "F_L", "F_R", "C_mid", "T_L", "T_R",
+             "P_mid", "P_L", "P_R", "O"]
+
+HUB_LABELS = ["F\nmid", "F\nL", "F\nR", "C\nmid", "T\nL", "T\nR",
+              "P\nmid", "P\nL", "P\nR", "O"]
+
+
+def render_dwpli_topo(df, info, condition, age_bin, dpi=100):
+    """Topographic maps of dwPLI node strength per band."""
+    bands = [b for b in CONN_BANDS if b in df["band"].unique()]
+    has_dwpli = "dwpli_node_strength" in df["metric"].values
+    if not bands or not has_dwpli:
+        return ""
+
+    n_cols = len(bands)
+    fig, axes = plt.subplots(1, n_cols, figsize=(2.5 * n_cols, 2.8))
+    if n_cols == 1:
+        axes = [axes]
+
+    for j, band in enumerate(bands):
+        ax = axes[j]
+        values = get_topo_array(df, band, condition, age_bin,
+                                "dwpli_node_strength")
+        if np.all(np.isnan(values)):
+            ax.set_visible(False)
+            continue
+        mne.viz.plot_topomap(
+            values, info, axes=ax, show=False, contours=0,
+            cmap="YlOrRd", sensors=True, names=None,
+        )
+        ax.set_title(band, fontsize=10, fontweight="bold")
+
+    fig.suptitle(f"dwPLI Node Strength — {condition.upper()} / {age_bin}",
+                 fontsize=12, y=1.02)
+    fig.tight_layout()
+    return fig_to_base64(fig, dpi)
+
+
+def render_hub_matrix(df, condition, age_bin, method="dwpli", dpi=100):
+    """Hub-to-hub connectivity heatmaps per band."""
+    bands = [b for b in CONN_BANDS if b in df["band"].unique()]
+
+    # Check if hub data exists
+    hub_channels = [ch for ch in df["channel"].unique()
+                    if ch.startswith("_hub_")]
+    if not hub_channels or not bands:
+        return ""
+
+    n_cols = min(len(bands), 3)
+    n_rows = (len(bands) + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(4 * n_cols, 3.5 * n_rows),
+                             squeeze=False)
+
+    for idx, band in enumerate(bands):
+        row, col = divmod(idx, n_cols)
+        ax = axes[row][col]
+
+        matrix = np.zeros((len(HUB_NAMES), len(HUB_NAMES)))
+        has_data = False
+        for i, hub_i in enumerate(HUB_NAMES):
+            ch = f"_hub_{hub_i}"
+            for j, hub_j in enumerate(HUB_NAMES):
+                if i == j:
+                    continue
+                metric_name = f"{method}_hub_{hub_j}"
+                mask = (
+                    (df["channel"] == ch)
+                    & (df["band"] == band)
+                    & (df["condition"] == condition)
+                    & (df["bin"] == age_bin)
+                    & (df["metric"] == metric_name)
+                )
+                row_data = df.loc[mask]
+                if not row_data.empty:
+                    matrix[i, j] = row_data.iloc[0]["mean"]
+                    has_data = True
+
+        if not has_data:
+            ax.set_visible(False)
+            continue
+
+        im = ax.imshow(matrix, cmap="YlOrRd", interpolation="nearest",
+                       vmin=0, vmax=max(0.3, np.max(matrix)))
+        ax.set_xticks(range(len(HUB_LABELS)))
+        ax.set_xticklabels(HUB_LABELS, fontsize=7)
+        ax.set_yticks(range(len(HUB_LABELS)))
+        ax.set_yticklabels(HUB_LABELS, fontsize=7)
+        ax.set_title(band, fontsize=10, fontweight="bold")
+        fig.colorbar(im, ax=ax, shrink=0.7)
+
+    # Hide unused axes
+    for idx in range(len(bands), n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row][col].set_visible(False)
+
+    fig.suptitle(
+        f"Hub-to-Hub {method.upper()} — {condition.upper()} / {age_bin}",
+        fontsize=12, y=1.02,
+    )
+    fig.tight_layout()
+    return fig_to_base64(fig, dpi)
+
+
+# ---------------------------------------------------------------------------
 # Coverage table
 # ---------------------------------------------------------------------------
 
@@ -494,7 +604,44 @@ def build_report(norms_path, output_path, dpi=100):
             "Band Power Heatmaps", make_tabs("heatmaps", heatmap_items)
         ))
 
-    # 6. Distribution quality
+    # 6. dwPLI node strength topomaps
+    if "dwpli_node_strength" in metrics:
+        print("  Rendering dwPLI node strength topomaps...")
+        dwpli_topo_items = []
+        for cond in conditions:
+            for age_bin in age_bins:
+                b64 = render_dwpli_topo(df, info, cond, age_bin, dpi)
+                if b64:
+                    dwpli_topo_items.append((
+                        f"{cond.upper()} / {age_bin}",
+                        f'<img src="data:image/png;base64,{b64}">'
+                    ))
+        if dwpli_topo_items:
+            sections.append(wrap_section(
+                "dwPLI Node Strength (Connectivity)",
+                make_tabs("dwpli-topo", dwpli_topo_items),
+            ))
+
+    # 7. Hub-to-hub connectivity matrices
+    hub_metrics = [m for m in metrics if m.startswith("dwpli_hub_")]
+    if hub_metrics:
+        print("  Rendering hub-to-hub connectivity matrices...")
+        hub_items = []
+        for cond in conditions:
+            for age_bin in age_bins:
+                b64 = render_hub_matrix(df, cond, age_bin, "dwpli", dpi)
+                if b64:
+                    hub_items.append((
+                        f"{cond.upper()} / {age_bin}",
+                        f'<img src="data:image/png;base64,{b64}">'
+                    ))
+        if hub_items:
+            sections.append(wrap_section(
+                "Hub-to-Hub dwPLI Connectivity",
+                make_tabs("hub-matrix", hub_items),
+            ))
+
+    # 8. Distribution quality
     print("  Rendering quality flags...")
     quality_items = []
     for cond in conditions:

@@ -164,6 +164,57 @@ class MetricsResult:
                     float(val) if val == val else None
                 )
 
+        # Connectivity: dwPLI node strength per electrode per band
+        if self.connectivity is not None:
+            elec_conn = self.connectivity.get("electrode_connectivity", {})
+            node_strength = elec_conn.get("node_strength", {})
+            conn_ch_names = elec_conn.get("ch_names", [])
+
+            for method, band_data in node_strength.items():
+                metric_name = f"{method}_node_strength"
+                for band, values in band_data.items():
+                    if values is None:
+                        continue
+                    for i, ch in enumerate(conn_ch_names):
+                        if i >= len(values):
+                            break
+                        if ch not in result:
+                            result[ch] = {}
+                        if band not in result[ch]:
+                            result[ch][band] = {}
+                        val = float(values[i])
+                        result[ch][band][metric_name] = val if val == val else None
+
+            # Graph metrics per band (stored under a synthetic "graph" channel)
+            graph_metrics = self.connectivity.get("graph_metrics", {})
+            if graph_metrics:
+                result["_graph"] = {}
+                for band, gm in graph_metrics.items():
+                    result["_graph"][band] = {
+                        "global_efficiency": gm.get("global_efficiency"),
+                        "char_path_length": gm.get("char_path_length"),
+                    }
+
+            # Hub-level connectivity matrices (store for downstream viz)
+            hub_conn = self.connectivity.get("hub_connectivity", {})
+            hub_names = self.connectivity.get("hub_names", [])
+            if hub_conn and hub_names:
+                for method, band_data in hub_conn.items():
+                    for band, matrix in band_data.items():
+                        if matrix is None:
+                            continue
+                        metric_name = f"{method}_hub"
+                        for i, hub_i in enumerate(hub_names):
+                            hub_ch = f"_hub_{hub_i}"
+                            if hub_ch not in result:
+                                result[hub_ch] = {}
+                            if band not in result[hub_ch]:
+                                result[hub_ch][band] = {}
+                            for j, hub_j in enumerate(hub_names):
+                                if i != j:
+                                    key = f"{metric_name}_{hub_j}"
+                                    result[hub_ch][band][key] = float(matrix[i, j])
+
         return result
 
 
