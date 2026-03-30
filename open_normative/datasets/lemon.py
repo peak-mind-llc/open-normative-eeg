@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import mne
+import numpy as np
 
 from open_normative.channels import pick_standard_19
 from open_normative.datasets.base import DatasetLoader, SubjectRecord
@@ -56,6 +57,13 @@ class LEMONLoader(DatasetLoader):
     def iter_subjects(self, data_dir: Path) -> Iterator[SubjectRecord]:
         """Yield SubjectRecord for each EO/EC file in the LEMON dataset.
 
+        Handles two LEMON data layouts:
+        1. **Separate files** — filenames contain EO/EC (e.g.
+           ``sub-010002_task-rest_EO_eeg.vhdr``).  One SubjectRecord per file.
+        2. **Single file** — one ``.vhdr`` per subject with S210 (EO) and
+           S200 (EC) markers inside.  The recording is split by markers and
+           one SubjectRecord is yielded per condition found.
+
         Parameters
         ----------
         data_dir:
@@ -68,16 +76,21 @@ class LEMONLoader(DatasetLoader):
         vhdr_files = sorted(
             set(data_dir.glob("sub-*/eeg/*.vhdr")) | set(data_dir.glob("sub-*/RSEEG/*.vhdr"))
         )
+
+        if not vhdr_files:
+            logger.warning("No .vhdr files found in %s/sub-*/{eeg,RSEEG}/", data_dir)
+            return
+
+        logger.info("Found %d .vhdr files", len(vhdr_files))
+
         for vhdr_path in vhdr_files:
             subject_id = vhdr_path.parts[-3]  # sub-XXXXXXX
-            condition = self._detect_condition(vhdr_path.name)
-            if condition is None:
-                logger.debug("Skipping %s: could not detect EO/EC condition", vhdr_path)
-                continue
-
             info = participants.get(subject_id, {})
             age = info.get("age", float("nan"))
             sex = info.get("sex", "")
+
+            # Try to detect condition from filename
+            condition = self._detect_condition(vhdr_path.name)
 
             try:
                 raw = mne.io.read_raw_brainvision(str(vhdr_path), preload=True, verbose=False)
@@ -95,17 +108,27 @@ class LEMONLoader(DatasetLoader):
                 )
                 continue
 
-            yield SubjectRecord(
-                subject_id=subject_id,
-                age=age,
-                sex=sex,
-                raw=raw,
-                condition=condition,
-                metadata={
-                    "source_file": str(vhdr_path),
-                    **info,
-                },
-            )
+            metadata = {"source_file": str(vhdr_path), **info}
+
+            if condition is not None:
+                # Filename tells us the condition — yield as-is
+                yield SubjectRecord(
+                    subject_id=subject_id, age=age, sex=sex,
+                    raw=raw, condition=condition, metadata=metadata,
+                )
+            else:
+                # Single-file recording — split by S210/S200 markers
+                splits = _split_by_markers(raw)
+                if not splits:
+                    logger.warning(
+                        "No EO/EC markers (S210/S200) found in %s — skipping", vhdr_path
+                    )
+                    continue
+                for cond, cond_raw in splits.items():
+                    yield SubjectRecord(
+                        subject_id=subject_id, age=age, sex=sex,
+                        raw=cond_raw, condition=cond, metadata=metadata,
+                    )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -236,6 +259,84 @@ class LEMONLoader(DatasetLoader):
         if "EO" in upper:
             return "eo"
         return None
+
+
+# LEMON stimulus markers for resting-state conditions
+_EO_MARKER = "Stimulus/S210"
+_EC_MARKER = "Stimulus/S200"
+
+
+def _split_by_markers(raw: mne.io.BaseRaw) -> dict[str, mne.io.BaseRaw]:
+    """Split a single LEMON recording into EO/EC using S210 and S200 markers.
+
+    The GWDG LEMON download stores both conditions in one continuous file.
+    Markers ``S210`` denote Eyes-Open epochs and ``S200`` denote Eyes-Closed
+    epochs, each spaced at regular intervals (typically every 2 s at 2500 Hz).
+
+    This function groups consecutive same-type markers into contiguous blocks,
+    crops each block from the raw recording, and concatenates them per
+    condition.
+
+    Returns
+    -------
+    dict
+        ``{"eo": Raw, "ec": Raw}`` for each condition that has markers.
+        Conditions with no markers are omitted.
+    """
+    marker_map = {_EO_MARKER: "eo", _EC_MARKER: "ec"}
+
+    # Collect onset times per condition
+    onsets: dict[str, list[float]] = {"eo": [], "ec": []}
+    for ann in raw.annotations:
+        desc = ann["description"].strip()
+        cond = marker_map.get(desc)
+        if cond:
+            onsets[cond].append(ann["onset"])
+
+    results: dict[str, mne.io.BaseRaw] = {}
+    for cond in ("eo", "ec"):
+        if len(onsets[cond]) < 2:
+            continue
+
+        sorted_onsets = sorted(onsets[cond])
+
+        # Compute epoch duration from median inter-marker interval
+        intervals = np.diff(sorted_onsets)
+        epoch_dur = float(np.median(intervals))
+
+        # Group consecutive markers into contiguous blocks.
+        # A gap > 2.5× the epoch duration signals a new block.
+        blocks: list[tuple[float, float]] = []
+        block_start = sorted_onsets[0]
+        prev = sorted_onsets[0]
+        for onset in sorted_onsets[1:]:
+            if onset - prev > epoch_dur * 2.5:
+                blocks.append((block_start, prev + epoch_dur))
+                block_start = onset
+            prev = onset
+        blocks.append((block_start, prev + epoch_dur))
+
+        # Crop each block and concatenate
+        max_time = raw.times[-1] + raw.first_time
+        segments = []
+        for bstart, bend in blocks:
+            bend = min(bend, max_time)
+            if bend <= bstart:
+                continue
+            try:
+                segments.append(raw.copy().crop(tmin=bstart, tmax=bend))
+            except ValueError:
+                logger.debug("Could not crop block [%.1f, %.1f] from %s", bstart, bend, cond)
+                continue
+
+        if segments:
+            results[cond] = mne.concatenate_raws(segments)
+            logger.info(
+                "  %s: %d blocks, %.1f s total",
+                cond.upper(), len(segments), results[cond].times[-1],
+            )
+
+    return results
 
 
 def _parse_age(raw: str) -> float:

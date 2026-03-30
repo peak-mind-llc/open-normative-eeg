@@ -150,20 +150,18 @@ Your directory should look like this (works as-is from the FTP download):
 ```
 lemon/
   META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv
-  sub-010002/RSEEG/sub-010002_task-rest_EO_eeg.vhdr
-  sub-010002/RSEEG/sub-010002_task-rest_EO_eeg.vmrk
-  sub-010002/RSEEG/sub-010002_task-rest_EO_eeg.eeg
-  sub-010002/RSEEG/sub-010002_task-rest_EC_eeg.vhdr
-  sub-010002/RSEEG/sub-010002_task-rest_EC_eeg.vmrk
-  sub-010002/RSEEG/sub-010002_task-rest_EC_eeg.eeg
+  sub-010002/RSEEG/sub-010002.vhdr       ← single-file format (auto-split by markers)
+  sub-010002/RSEEG/sub-010002.vmrk
+  sub-010002/RSEEG/sub-010002.eeg
   sub-010004/RSEEG/...
   ...
 ```
 
-Optionally, you can rename `RSEEG/` to `eeg/` for BIDS compliance:
-```bash
-for d in sub-*/RSEEG; do mv "$d" "$(dirname "$d")/eeg"; done
-```
+The loader handles **both** LEMON file formats automatically:
+- **Single-file recordings** (e.g. `sub-010002.vhdr`) — the loader reads the `S210` (Eyes Open) and `S200` (Eyes Closed) markers from the recording and splits the data into separate EO and EC segments.
+- **Separate EO/EC files** (e.g. `sub-010002_task-rest_EO_eeg.vhdr`) — detected from the filename.
+
+Both `RSEEG/` and `eeg/` subdirectory names are supported. No renaming needed.
 
 The loader auto-detects the META CSV and parses age (5-year range bins like `20-25`, converted to midpoint `22.5`), sex (`1`=female, `2`=male), and subject IDs (`sub-XXXXXX`).
 
