@@ -46,7 +46,8 @@ def _assign_bin(age: int | float, bins: list[int]) -> Optional[str]:
     Returns:
         Bin label string like "20-29", or None if age is out of range.
     """
-    if age < bins[0] or age >= bins[-1]:
+    import math
+    if math.isnan(age) or age < bins[0] or age >= bins[-1]:
         return None
     idx = bisect.bisect_right(bins, age) - 1
     return _bin_label(bins[idx], bins[idx + 1])
