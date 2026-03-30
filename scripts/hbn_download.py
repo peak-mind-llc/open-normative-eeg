@@ -290,50 +290,18 @@ def download_subjects(dest_dir, subjects, dry_run=False, max_retries=3):
 
 
 def download_metadata(dest_dir, dry_run=False):
-    """Try to download HBN metadata CSV (contains Commercial_Use column, etc.).
+    """Download HBN metadata from participants.tsv files in each release.
 
-    Tries several known paths on S3 and also syncs any top-level CSV
-    files from the HBN project directory.
+    The Commercial_Use column and other metadata live in the per-release
+    participants.tsv files (already downloaded by download_participants).
+    This function is kept as a no-op placeholder — the useful metadata
+    is in participants.tsv, not in a separate file on S3.
     """
-    metadata_dir = dest_dir / "metadata"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-
-    # Known candidate paths for the metadata file
-    candidates = [
-        f"{S3_BASE}/HBN_Metadata.csv",
-        f"{S3_BASE}/HBN_R1_Participan_Data_Tables.csv",
-        f"{S3_BASE}/HBN_R1_Participant_Data_Tables.csv",
-    ]
-
-    for src in candidates:
-        fname = src.rsplit("/", 1)[-1]
-        dest = metadata_dir / fname
-        if dest.exists() and not dry_run:
-            logger.info("Metadata file %s already exists, skipping", fname)
-            continue
-        logger.info("Trying to download %s ...", src)
-        try:
-            run_aws(["cp", src, str(dest)], dry_run=dry_run)
-            logger.info("  Downloaded %s", fname)
-        except Exception:
-            logger.info("  Not found: %s", src)
-
-    # Also sync any CSVs from the base HBN directory
-    logger.info("Syncing top-level CSV files from %s ...", S3_BASE)
-    try:
-        run_aws(
-            [
-                "sync", f"{S3_BASE}/", str(metadata_dir),
-                "--exclude", "*",
-                "--include", "*.csv",
-                "--include", "*.CSV",
-            ],
-            dry_run=dry_run,
-        )
-    except Exception:
-        logger.warning("Could not sync CSV files from %s", S3_BASE)
-
-    return metadata_dir
+    logger.info(
+        "Metadata (commercial_use, demographics) is in each release's "
+        "participants.tsv — no separate metadata download needed."
+    )
+    return dest_dir
 
 
 def save_manifest(dest_dir, subjects, release):
