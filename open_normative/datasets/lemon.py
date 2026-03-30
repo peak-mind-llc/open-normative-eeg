@@ -85,8 +85,16 @@ class LEMONLoader(DatasetLoader):
         logger.info("Found %d .vhdr files", len(vhdr_files))
 
         for vhdr_path in vhdr_files:
-            subject_id = vhdr_path.parts[-3]  # sub-XXXXXXX
+            subject_id = vhdr_path.parts[-3]  # sub-XXXXXXX (directory name)
+
+            # The BIDS download may remap subject IDs (e.g. sub-032301 dirs
+            # contain files originally named sub-010002).  Extract the original
+            # ID from the .vhdr's internal DataFile reference so we can match
+            # against the demographics files which use original IDs.
+            original_id = _extract_original_id(vhdr_path)
             info = participants.get(subject_id, {})
+            if not info and original_id and original_id != subject_id:
+                info = participants.get(original_id, {})
             age = info.get("age", float("nan"))
             sex = info.get("sex", "")
 
@@ -261,6 +269,23 @@ class LEMONLoader(DatasetLoader):
         if "EO" in upper:
             return "eo"
         return None
+
+
+def _extract_original_id(vhdr_path: Path) -> str | None:
+    """Extract the original subject ID from a .vhdr's internal DataFile reference.
+
+    In the LEMON BIDS download the directories are renamed (e.g. sub-032301)
+    but the internal DataFile still references the original filename
+    (e.g. sub-010002.eeg).  Returns the stem of that reference, or None.
+    """
+    try:
+        for line in vhdr_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("DataFile="):
+                ref = line.split("=", 1)[1].strip()
+                return Path(ref).stem
+    except Exception:
+        pass
+    return None
 
 
 def _fix_vhdr_refs(vhdr_path: Path) -> Path:
