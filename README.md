@@ -216,6 +216,23 @@ python scripts/build_norms.py /path/to/mipdb -o ./mipdb_norms \
     --age-bins 6 12 18 25 35 45
 ```
 
+## Visualize Normative Database
+
+Generate an HTML report with topographic head maps, band power heatmaps, coverage tables, and distribution quality flags:
+
+```bash
+python scripts/visualize_norms.py norms_output/norms.json -o report.html
+```
+
+Open `report.html` in a browser. The report includes:
+- **Topographic maps** of mean power per band and age bin (uncorrected and corrected)
+- **Corrected vs uncorrected comparison** side-by-side topomaps
+- **Band power heatmaps** (channels x bands matrix per age bin)
+- **Coverage table** showing sample sizes per age bin, with low-n warnings
+- **Distribution quality** flags for non-normality and sparse cells
+
+All images are embedded in the HTML — no external files needed.
+
 ## Python API
 
 ### Process a single recording
