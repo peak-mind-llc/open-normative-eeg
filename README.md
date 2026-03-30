@@ -185,6 +185,25 @@ python scripts/build_norms.py /path/to/lemon -o ./norms_output --condition eo
 python scripts/build_norms.py /path/to/lemon -o ./norms_output
 ```
 
+#### 4. QC sweep (recommended before building norms)
+
+Run a quality check across all subjects before the full pipeline:
+
+```bash
+# Quick test with 5 subjects
+python scripts/lemon_qc.py /path/to/lemon -o ./lemon_qc --max-subjects 5
+
+# Full sweep, 4 parallel workers
+python scripts/lemon_qc.py /path/to/lemon -o ./lemon_qc -j 4
+```
+
+This produces:
+- `summary.md` — overview table with ready/review/exclude counts
+- `ready.txt` / `excluded.txt` — subject lists for downstream use
+- `subjects/*.json` — per-subject QC details (flat channels, railing, artifact %, marker presence, etc.)
+
+The script is resumable — re-run it and it will skip already-completed subjects.
+
 ---
 
 ### HBN (~2500 subjects, ages 5-21, 128-channel EGI)
