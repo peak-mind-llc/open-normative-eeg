@@ -167,29 +167,16 @@ The loader auto-detects the META CSV and parses age (5-year range bins like `20-
 
 The 62-channel 10-10 names (T7, T8, P7, P8, etc.) are automatically mapped to the standard 19-channel 10-20 montage by name matching.
 
-#### 3. Build norms
+#### 3. QC sweep (recommended before building norms)
+
+Run a quality check across all subjects before the full pipeline. This catches
+data integrity issues (corrupt files, wrong sampling rate, missing channels,
+excessive artifact, missing condition markers) so you don't waste time
+processing bad data.
 
 ```bash
 source .venv/bin/activate
 
-# Fast test: 5 subjects, spectral only
-python scripts/build_norms.py /path/to/lemon \
-    -o ./test_output \
-    --max-subjects 5 \
-    --skip-connectivity
-
-# Eyes-open only, full pipeline
-python scripts/build_norms.py /path/to/lemon -o ./norms_output --condition eo
-
-# Both conditions, full pipeline
-python scripts/build_norms.py /path/to/lemon -o ./norms_output
-```
-
-#### 4. QC sweep (recommended before building norms)
-
-Run a quality check across all subjects before the full pipeline:
-
-```bash
 # Quick test with 5 subjects
 python scripts/lemon_qc.py /path/to/lemon -o ./lemon_qc --max-subjects 5
 
@@ -198,11 +185,45 @@ python scripts/lemon_qc.py /path/to/lemon -o ./lemon_qc -j 4
 ```
 
 This produces:
-- `summary.md` — overview table with ready/review/exclude counts
+- `summary.md` — overview table with ready/review/exclude verdicts and reasons
 - `ready.txt` / `excluded.txt` — subject lists for downstream use
 - `subjects/*.json` — per-subject QC details (flat channels, railing, artifact %, marker presence, etc.)
 
+**What it checks:**
+
+| Category | Checks |
+|----------|--------|
+| Integrity | Sampling rate (2500 Hz), channel count (62), duration (3-20 min) |
+| Channels | Missing/unexpected names, flat (var < 0.1 µV), railed (>500 µV), 50 Hz line noise |
+| Signal | Amplitude distribution, artifact % (>200 µV), DC offset |
+| Markers | S210 (EO) / S200 (EC) presence and duration (>1 min each) |
+| Reference | FCz absent (was online reference) |
+
 The script is resumable — re-run it and it will skip already-completed subjects.
+
+#### 4. Build norms
+
+Use `--qc-dir` to only process QC-passed subjects:
+
+```bash
+# Build norms using only QC-passed subjects (recommended)
+python scripts/build_norms.py /path/to/lemon \
+    -o ./norms_output \
+    --qc-dir ./lemon_qc
+
+# Quick test: 5 subjects, spectral only, with QC filter
+python scripts/build_norms.py /path/to/lemon \
+    -o ./test_output \
+    --max-subjects 5 \
+    --skip-connectivity \
+    --qc-dir ./lemon_qc
+
+# Without QC filter (processes all subjects)
+python scripts/build_norms.py /path/to/lemon -o ./norms_output
+
+# Eyes-open only
+python scripts/build_norms.py /path/to/lemon -o ./norms_output --condition eo
+```
 
 ---
 
