@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """QC sweep for HBN EEG data — run before the normative pipeline.
 
-Loads each subject's raw 128-channel EGI EEG and checks integrity,
-channel quality, signal quality (pediatric thresholds), condition
-markers, reference channel, and phenotypic data (CBCL filtering).
+Loads each subject's EEG (EEGLAB .set format in BIDS layout, or
+legacy 128-channel EGI .mff/.raw) and checks integrity, channel
+quality, signal quality (pediatric thresholds), condition markers,
+reference channel, and phenotypic data (CBCL filtering).
+
+HBN BIDS EEG structure:
+- Files are .set (EEGLAB format) with .fdt companion data files.
+- Resting state is a SINGLE file ``sub-*_task-RestingState_eeg.set``
+  containing BOTH eyes-open and eyes-closed blocks (5x20s EO + 5x40s EC).
+- EO/EC transitions are encoded in ``sub-*_task-RestingState_events.tsv``.
+- Other tasks: SurroundSupp, ContrastChange, SequenceLearning,
+  SymbolSearch, Video*.
 
 Usage:
     # Quick test with 5 subjects
@@ -114,9 +123,10 @@ def check_integrity(raw, eeg_path):
     # Parse paradigm from BIDS filename (HBN EEG protocol)
     paradigm = "unknown"
     name = Path(eeg_path).name.upper()
-    for tag in ("RESTEO", "RESTEC", "REST",
-                "SEQUENCE", "SYMBOLSEARCH", "SURROUND",
-                "CONTRAST", "VIDEO"):
+    for tag in ("RESTINGSTATE", "RESTEO", "RESTEC", "REST",
+                "SURROUNDSUP", "CONTRASTCHANGE", "SEQUENCELEARNING",
+                "SYMBOLSEARCH", "SURROUND",
+                "SEQUENCE", "CONTRAST", "VIDEO"):
         if tag in name:
             paradigm = tag.lower()
             break
@@ -207,26 +217,119 @@ def check_signal_quality(raw):
     }
 
 
+def _parse_events_tsv(eeg_path):
+    """Read the BIDS ``_events.tsv`` companion for an EEG file.
+
+    Parameters
+    ----------
+    eeg_path : str or Path
+        Path to the ``.set`` (or ``.mff`` / ``.raw``) EEG file.
+
+    Returns
+    -------
+    list[dict]
+        Each dict has ``onset`` (float, seconds), ``duration`` (float),
+        and ``trial_type`` (str).  Returns an empty list when no events
+        file is found or it cannot be parsed.
+    """
+    eeg_path = Path(eeg_path)
+    # BIDS convention: replace modality suffix + extension with _events.tsv
+    # e.g. sub-X_task-RestingState_eeg.set -> sub-X_task-RestingState_events.tsv
+    stem = eeg_path.name
+    for suffix in ("_eeg.set", "_eeg.fdt", "_eeg.mff", "_eeg.raw",
+                    ".set", ".fdt", ".mff", ".raw"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    events_path = eeg_path.parent / f"{stem}_events.tsv"
+    if not events_path.exists():
+        return []
+
+    events = []
+    try:
+        with events_path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                try:
+                    onset = float(row.get("onset", "nan"))
+                    duration = float(row.get("duration", "0") or "0")
+                except (ValueError, TypeError):
+                    continue
+                trial_type = row.get("trial_type",
+                                     row.get("value",
+                                             row.get("description", ""))).strip()
+                events.append({
+                    "onset": onset,
+                    "duration": duration,
+                    "trial_type": trial_type,
+                })
+    except Exception:
+        pass
+    return events
+
+
 def check_markers(raw, eeg_path):
-    """Identify resting-state condition and parse event markers."""
+    """Identify resting-state condition and parse event markers.
+
+    For BIDS HBN data the resting file contains interleaved EO/EC blocks.
+    We first try to parse the companion ``_events.tsv``; if unavailable we
+    fall back to raw annotations.
+    """
     name = Path(eeg_path).name.upper()
     condition = None
-    if "EC" in name:
+    if "EC" in name and "EO" not in name and "RESTINGSTATE" not in name:
         condition = "ec"
-    elif "EO" in name:
+    elif "EO" in name and "EC" not in name and "RESTINGSTATE" not in name:
         condition = "eo"
-    elif "REST" in name:
-        condition = "eo"  # default resting to EO
+    elif "RESTINGSTATE" in name or "REST" in name:
+        condition = "eo+ec"  # combined resting
 
+    # ── Try BIDS events.tsv first ──
+    bids_events = _parse_events_tsv(eeg_path)
+    eo_keywords = {"eyesopen", "eyes_open", "eyes open", "open", "eo"}
+    ec_keywords = {"eyesclosed", "eyes_closed", "eyes closed", "closed", "ec"}
+
+    eo_duration = 0.0
+    ec_duration = 0.0
+    for ev in bids_events:
+        tt = ev["trial_type"].lower().strip()
+        if tt in eo_keywords:
+            eo_duration += ev["duration"]
+        elif tt in ec_keywords:
+            ec_duration += ev["duration"]
+
+    has_events_tsv = len(bids_events) > 0
+
+    # ── Fall back to raw annotations ──
     ann_count = len(raw.annotations)
     descs = [a["description"] for a in raw.annotations] if ann_count else []
     unique_events = sorted(set(descs))
 
+    if not has_events_tsv and ann_count > 0:
+        # Try to extract EO/EC durations from annotations
+        for ann in raw.annotations:
+            desc = ann["description"].lower().strip()
+            dur = float(ann["duration"]) if ann["duration"] else 0.0
+            if desc in eo_keywords:
+                eo_duration += dur
+            elif desc in ec_keywords:
+                ec_duration += dur
+
+    is_resting = condition is not None
+    eo_ok = eo_duration >= MIN_CONDITION_S
+    ec_ok = ec_duration >= MIN_CONDITION_S
+
     return {
         "condition_from_filename": condition,
+        "has_events_tsv": has_events_tsv,
+        "n_bids_events": len(bids_events),
+        "eo_duration_s": round(eo_duration, 1),
+        "ec_duration_s": round(ec_duration, 1),
+        "eo_duration_ok": eo_ok,
+        "ec_duration_ok": ec_ok,
         "annotation_count": ann_count,
         "unique_events": unique_events[:20],  # cap for JSON size
-        "is_resting": condition is not None,
+        "is_resting": is_resting,
     }
 
 
@@ -480,7 +583,7 @@ def qc_one_subject(subject_id, eeg_files, face_neck_chs):
     resting_file = None
     for p in eeg_files:
         name = Path(p).name.upper()
-        if any(t in name for t in ("REST", "EO", "EC")):
+        if any(t in name for t in ("RESTINGSTATE", "REST", "EO", "EC")):
             resting_file = p
             break
     if resting_file is None:
@@ -489,18 +592,29 @@ def qc_one_subject(subject_id, eeg_files, face_neck_chs):
     # Record all paradigms (HBN EEG protocol)
     for p in eeg_files:
         name = Path(p).name.upper()
-        for tag in ("RESTEO", "RESTEC", "REST",
-                    "SEQUENCE", "SYMBOLSEARCH", "SURROUND",
-                    "CONTRAST", "VIDEO"):
+        for tag in ("RESTINGSTATE", "RESTEO", "RESTEC", "REST",
+                    "SURROUNDSUP", "CONTRASTCHANGE", "SEQUENCELEARNING",
+                    "SYMBOLSEARCH", "SURROUND",
+                    "SEQUENCE", "CONTRAST", "VIDEO"):
             if tag in name:
                 result["paradigms"].append(tag.lower())
                 break
         else:
             result["paradigms"].append("unknown")
 
-    # QC the resting file
+    # QC the resting file — try EEGLAB (.set) first, then EGI (.mff/.raw)
     try:
-        raw = mne.io.read_raw_egi(str(resting_file), preload=True, verbose=False)
+        ext = Path(resting_file).suffix.lower()
+        if ext == ".set":
+            raw = mne.io.read_raw_eeglab(str(resting_file), preload=True,
+                                         verbose=False)
+        elif ext == ".mff":
+            raw = mne.io.read_raw_egi(str(resting_file), preload=True,
+                                      verbose=False)
+        else:
+            # .raw or other — try EGI reader
+            raw = mne.io.read_raw_egi(str(resting_file), preload=True,
+                                      verbose=False)
         raw.pick("eeg")
     except Exception as e:
         result.update({
@@ -536,13 +650,33 @@ def qc_one_subject(subject_id, eeg_files, face_neck_chs):
 # ── File discovery & resume ──────────────────────────────────────────────────
 
 def discover_subjects(data_dir):
-    """Find all EEG files grouped by subject."""
+    """Find all EEG files grouped by subject.
+
+    Looks for BIDS EEGLAB ``.set`` files first (the standard HBN BIDS
+    layout), then falls back to legacy EGI ``.mff`` / ``.raw`` files.
+    Companion ``.fdt`` files are noted but not returned as separate
+    entries (MNE loads them automatically via the ``.set``).
+    """
+    data_root = Path(data_dir)
     eeg_files = sorted(
-        list(Path(data_dir).glob("sub-*/eeg/*.mff"))
-        + list(Path(data_dir).glob("sub-*/eeg/*.raw"))
+        list(data_root.glob("sub-*/eeg/*.set"))
+        + list(data_root.glob("sub-*/eeg/*.mff"))
+        + list(data_root.glob("sub-*/eeg/*.raw"))
     )
-    subjects = {}
+    # De-duplicate: if a .set file exists for a task, skip .mff/.raw
+    # for the same stem
+    seen_stems: set[str] = set()
+    filtered: list[Path] = []
     for p in eeg_files:
+        stem = p.stem  # e.g. sub-X_task-RestingState_eeg
+        if p.suffix == ".set":
+            seen_stems.add(stem)
+            filtered.append(p)
+        elif stem not in seen_stems:
+            filtered.append(p)
+
+    subjects: dict[str, list[Path]] = {}
+    for p in filtered:
         for part in p.parts:
             if part.startswith("sub-"):
                 subjects.setdefault(part, []).append(p)

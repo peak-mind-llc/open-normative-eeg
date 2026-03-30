@@ -4,11 +4,31 @@
 Downloads BIDS-formatted EEG data, participants.tsv, and phenotypic
 data from s3://fcp-indi/data/Projects/HBN/.
 
+The BIDS EEG data on S3 is organized into release subdirectories::
+
+    s3://fcp-indi/data/Projects/HBN/BIDS_EEG/
+        cmi_bids_R1/    # Release 1 - ~136 subjects
+        cmi_bids_R2/    # Release 2 - ~154 subjects
+        ...
+        cmi_bids_R11/   # Release 11 - ~430 subjects
+
+Each release directory contains participants.tsv and subject folders
+with .set (EEGLAB format) EEG files (NOT .mff EGI native)::
+
+    cmi_bids_R1/
+        participants.tsv
+        sub-NDARXXXXXXX/
+            eeg/
+                sub-NDARXXXXXXX_task-RestingState_eeg.set
+                sub-NDARXXXXXXX_task-RestingState_eeg.json
+                sub-NDARXXXXXXX_task-RestingState_channels.tsv
+                sub-NDARXXXXXXX_task-RestingState_events.tsv
+
 Usage:
-    # Download Release 1 EEG data (~200-300 subjects)
+    # Download Release 1 EEG data (~136 subjects)
     python scripts/hbn_download.py ~/Data/EEG/HBN --release 1
 
-    # Download all releases
+    # Download all releases (R1-R11)
     python scripts/hbn_download.py ~/Data/EEG/HBN --release all
 
     # Dry run — show what would be downloaded
@@ -36,9 +56,8 @@ S3_EEG = f"{S3_BASE}/BIDS_EEG"
 S3_PHENO = f"{S3_BASE}/phenotypic"
 
 # HBN has 11 releases.  Subjects are organized by release on S3 as
-# BIDS_EEG/sub-NDARXXXXXXX/ (flat, not release-partitioned), but the
-# participants.tsv lists which release each subject belongs to.
-# We download participants.tsv first, then filter by release.
+# BIDS_EEG/cmi_bids_R{n}/sub-NDARXXXXXXX/.  Each release directory
+# has its own participants.tsv.  Files are .set (EEGLAB format).
 TOTAL_RELEASES = 11
 
 
@@ -65,16 +84,38 @@ def run_aws(args, dry_run=False, capture=False):
         sys.exit(1)
 
 
-def download_participants(dest_dir, dry_run=False):
-    """Download participants.tsv from the BIDS_EEG directory."""
-    dest = dest_dir / "participants.tsv"
-    src = f"{S3_EEG}/participants.tsv"
-    if dest.exists() and not dry_run:
-        logger.info("participants.tsv already exists, skipping")
-        return dest
-    logger.info("Downloading participants.tsv...")
-    run_aws(["cp", src, str(dest)], dry_run=dry_run)
-    return dest
+def s3_release_prefix(release_num):
+    """Return the S3 prefix for a given release number."""
+    return f"{S3_EEG}/cmi_bids_R{release_num}"
+
+
+def download_participants(dest_dir, release, dry_run=False):
+    """Download participants.tsv from the release-specific subdirectory.
+
+    For a single release, downloads from cmi_bids_R{release}/participants.tsv.
+    For 'all', downloads from each release directory.
+    """
+    if release == "all":
+        releases = range(1, TOTAL_RELEASES + 1)
+    else:
+        releases = [int(release)]
+
+    paths = []
+    for rel in releases:
+        release_dir = dest_dir / f"cmi_bids_R{rel}"
+        release_dir.mkdir(parents=True, exist_ok=True)
+        dest = release_dir / "participants.tsv"
+        src = f"{s3_release_prefix(rel)}/participants.tsv"
+        if dest.exists() and not dry_run:
+            logger.info("participants.tsv for R%d already exists, skipping", rel)
+        else:
+            logger.info("Downloading participants.tsv for R%d...", rel)
+            try:
+                run_aws(["cp", src, str(dest)], dry_run=dry_run)
+            except Exception:
+                logger.warning("Could not download participants.tsv for R%d", rel)
+        paths.append(dest)
+    return paths
 
 
 def download_phenotypic(dest_dir, dry_run=False):
@@ -89,76 +130,119 @@ def download_phenotypic(dest_dir, dry_run=False):
     return pheno_dir
 
 
-def list_s3_subjects():
-    """List all subject directories on S3."""
-    logger.info("Listing subjects on S3 (this may take a moment)...")
-    output = run_aws(
-        ["ls", f"{S3_EEG}/", "--recursive"],
-        capture=True,
-    )
-    # Parse subject IDs from paths like "...BIDS_EEG/sub-NDARXXXXX/..."
+def list_s3_subjects(release_num=None):
+    """List subject directories on S3 for a given release (or all).
+
+    Parameters
+    ----------
+    release_num : int or None
+        If given, list subjects under cmi_bids_R{release_num}/.
+        If None, list across all release directories.
+    """
+    if release_num is not None:
+        prefixes = [f"{s3_release_prefix(release_num)}/"]
+    else:
+        prefixes = [f"{s3_release_prefix(r)}/" for r in range(1, TOTAL_RELEASES + 1)]
+
     subjects = set()
-    for line in output.splitlines():
-        parts = line.strip().split()
-        if len(parts) < 4:
+    for prefix in prefixes:
+        logger.info("Listing subjects at %s ...", prefix)
+        try:
+            output = run_aws(["ls", prefix], capture=True)
+        except Exception:
+            logger.warning("Could not list %s", prefix)
             continue
-        path = parts[3]
-        for segment in path.split("/"):
-            if segment.startswith("sub-"):
-                subjects.add(segment)
-                break
+        for line in output.splitlines():
+            # `aws s3 ls` on a prefix returns lines like "PRE sub-NDARXXXXX/"
+            parts = line.strip().split()
+            if not parts:
+                continue
+            dirname = parts[-1].rstrip("/")
+            if dirname.startswith("sub-"):
+                subjects.add(dirname)
     return sorted(subjects)
 
 
 def estimate_size(subjects):
     """Rough estimate of download size.
 
-    HBN EEG files are ~50-100 MB per subject (128ch, 500 Hz, multiple tasks).
+    HBN EEG .set files are ~50-100 MB per subject (128ch, 500 Hz,
+    multiple tasks in EEGLAB .set format).
     """
     per_subject_mb = 75  # rough average
     total_gb = len(subjects) * per_subject_mb / 1024
     return total_gb
 
 
-def load_release_subjects(participants_path, release):
-    """Load participants.tsv and filter by release number.
+def load_release_subjects(dest_dir, release):
+    """Determine subjects for a release by listing S3 or parsing participants.tsv.
 
-    Returns set of subject IDs for the requested release(s).
+    For a specific release, lists subject directories from S3 at
+    cmi_bids_R{release}/.  Falls back to parsing participants.tsv if
+    the S3 listing fails or returns empty.
+
+    For 'all', aggregates across releases 1-11.
+
+    Returns set of (subject_id, release_num) tuples.
     """
     import csv
-    subjects = set()
-    if not participants_path.exists():
-        return subjects
 
-    with participants_path.open(newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh, delimiter="\t")
-        for row in reader:
-            sid = row.get("participant_id", "").strip()
-            if not sid:
-                continue
-            # Check release column if filtering
-            if release != "all":
-                rel = row.get("release", row.get("Release", "")).strip()
-                try:
-                    if int(rel) != int(release):
-                        continue
-                except (ValueError, TypeError):
+    if release == "all":
+        releases = range(1, TOTAL_RELEASES + 1)
+    else:
+        releases = [int(release)]
+
+    subjects = set()
+    for rel in releases:
+        # Primary: list subjects directly from S3
+        s3_subjects = list_s3_subjects(release_num=rel)
+        if s3_subjects:
+            for sid in s3_subjects:
+                subjects.add((sid, rel))
+            logger.info("R%d: %d subjects found on S3", rel, len(s3_subjects))
+            continue
+
+        # Fallback: parse participants.tsv for this release
+        participants_path = dest_dir / f"cmi_bids_R{rel}" / "participants.tsv"
+        if not participants_path.exists():
+            logger.warning("R%d: no subjects found on S3 and no participants.tsv", rel)
+            continue
+
+        count = 0
+        with participants_path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                sid = row.get("participant_id", "").strip()
+                if not sid:
                     continue
-            subjects.add(sid)
+                subjects.add((sid, rel))
+                count += 1
+        logger.info("R%d: %d subjects from participants.tsv (S3 listing failed)", rel, count)
+
     return subjects
 
 
 def download_subjects(dest_dir, subjects, dry_run=False, max_retries=3):
-    """Download EEG data for a list of subjects."""
-    eeg_dir = dest_dir
+    """Download EEG data for a list of subjects.
+
+    Parameters
+    ----------
+    dest_dir : Path
+        Local destination root.
+    subjects : set of (subject_id, release_num) tuples
+        Subjects to download, with their release number so we know
+        which S3 prefix to sync from.
+    dry_run : bool
+    max_retries : int
+    """
     total = len(subjects)
     downloaded = 0
     skipped = 0
     errors = 0
     start = time.time()
 
-    for i, sid in enumerate(sorted(subjects)):
-        sub_dir = eeg_dir / sid
+    for i, (sid, rel) in enumerate(sorted(subjects)):
+        sub_dir = dest_dir / sid
         eeg_subdir = sub_dir / "eeg"
 
         # Resume: skip if subject directory already has EEG files
@@ -169,11 +253,11 @@ def download_subjects(dest_dir, subjects, dry_run=False, max_retries=3):
         elapsed = time.time() - start
         rate = (downloaded + 1) / max(elapsed, 1) * 60
         logger.info(
-            "[%d/%d] Downloading %s (%.0f subj/min, %d skipped)",
-            i + 1, total, sid, rate, skipped,
+            "[%d/%d] Downloading %s (R%d, %.0f subj/min, %d skipped)",
+            i + 1, total, sid, rel, rate, skipped,
         )
 
-        s3_src = f"{S3_EEG}/{sid}/"
+        s3_src = f"{s3_release_prefix(rel)}/{sid}/"
         sub_dir.mkdir(parents=True, exist_ok=True)
 
         success = False
@@ -205,13 +289,62 @@ def download_subjects(dest_dir, subjects, dry_run=False, max_retries=3):
     return downloaded, skipped, errors
 
 
+def download_metadata(dest_dir, dry_run=False):
+    """Try to download HBN metadata CSV (contains Commercial_Use column, etc.).
+
+    Tries several known paths on S3 and also syncs any top-level CSV
+    files from the HBN project directory.
+    """
+    metadata_dir = dest_dir / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    # Known candidate paths for the metadata file
+    candidates = [
+        f"{S3_BASE}/HBN_Metadata.csv",
+        f"{S3_BASE}/HBN_R1_Participan_Data_Tables.csv",
+        f"{S3_BASE}/HBN_R1_Participant_Data_Tables.csv",
+    ]
+
+    for src in candidates:
+        fname = src.rsplit("/", 1)[-1]
+        dest = metadata_dir / fname
+        if dest.exists() and not dry_run:
+            logger.info("Metadata file %s already exists, skipping", fname)
+            continue
+        logger.info("Trying to download %s ...", src)
+        try:
+            run_aws(["cp", src, str(dest)], dry_run=dry_run)
+            logger.info("  Downloaded %s", fname)
+        except Exception:
+            logger.info("  Not found: %s", src)
+
+    # Also sync any CSVs from the base HBN directory
+    logger.info("Syncing top-level CSV files from %s ...", S3_BASE)
+    try:
+        run_aws(
+            [
+                "sync", f"{S3_BASE}/", str(metadata_dir),
+                "--exclude", "*",
+                "--include", "*.csv",
+                "--include", "*.CSV",
+            ],
+            dry_run=dry_run,
+        )
+    except Exception:
+        logger.warning("Could not sync CSV files from %s", S3_BASE)
+
+    return metadata_dir
+
+
 def save_manifest(dest_dir, subjects, release):
     """Save a manifest of what was downloaded."""
+    # subjects is a set of (subject_id, release_num) tuples
+    subject_list = sorted(sid for sid, _rel in subjects)
     manifest = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "release": release,
-        "n_subjects": len(subjects),
-        "subjects": sorted(subjects),
+        "n_subjects": len(subject_list),
+        "subjects": subject_list,
         "s3_source": S3_EEG,
     }
     path = dest_dir / "download_manifest.json"
@@ -240,6 +373,10 @@ def main():
         "--skip-phenotypic", action="store_true",
         help="Skip downloading phenotypic/assessment data",
     )
+    parser.add_argument(
+        "--skip-metadata", action="store_true",
+        help="Skip downloading HBN metadata CSV files",
+    )
     args = parser.parse_args()
 
     # Setup logging
@@ -251,26 +388,23 @@ def main():
     dest_dir = args.dest_dir
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Download participants.tsv
-    participants_path = download_participants(dest_dir, dry_run=args.dry_run)
+    # Step 1: Download participants.tsv (per-release)
+    download_participants(dest_dir, args.release, dry_run=args.dry_run)
 
     # Step 2: Download phenotypic data
     if not args.skip_phenotypic:
         download_phenotypic(dest_dir, dry_run=args.dry_run)
 
+    # Step 2b: Download metadata CSV files
+    if not args.skip_metadata:
+        download_metadata(dest_dir, dry_run=args.dry_run)
+
     # Step 3: Determine which subjects to download
-    if participants_path.exists():
-        subjects = load_release_subjects(participants_path, args.release)
-        logger.info(
-            "Release %s: %d subjects in participants.tsv",
-            args.release, len(subjects),
-        )
-    else:
-        # Fallback: list subjects directly from S3
-        logger.info("No participants.tsv — listing subjects from S3...")
-        all_subjects = list_s3_subjects()
-        subjects = set(all_subjects)
-        logger.info("Found %d subjects on S3", len(subjects))
+    subjects = load_release_subjects(dest_dir, args.release)
+    logger.info(
+        "Release %s: %d subjects found",
+        args.release, len(subjects),
+    )
 
     if args.max_subjects > 0:
         subjects = set(sorted(subjects)[: args.max_subjects])
