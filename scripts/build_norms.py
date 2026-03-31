@@ -21,6 +21,8 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
 from open_normative.datasets import DATASETS
 from open_normative.io import write_norms_csv, write_norms_json, write_subjects_csv
 from open_normative.normative import build_normative
@@ -59,6 +61,28 @@ def save_checkpoint(subjects_dir: Path, subject_id: str, condition: str, metrics
         json.dump(metrics, f)
 
 
+def save_psd_checkpoint(psd_dir: Path, subject_id: str, condition: str,
+                        freqs: np.ndarray, psds: np.ndarray, ch_names: list):
+    """Save a single subject's full PSD array as an .npz checkpoint."""
+    fname = f"{subject_id}_{condition}_psd.npz"
+    np.savez_compressed(
+        psd_dir / fname,
+        freqs=freqs,
+        psds=psds,  # shape (n_channels, n_freqs), V²/Hz
+        ch_names=np.array(ch_names),
+    )
+
+
+def load_psd_checkpoint(fpath: Path) -> dict:
+    """Load a PSD checkpoint .npz file."""
+    data = np.load(fpath, allow_pickle=False)
+    return {
+        "freqs": data["freqs"],
+        "psds": data["psds"],
+        "ch_names": list(data["ch_names"]),
+    }
+
+
 def load_checkpoints(subjects_dir: Path) -> dict[str, dict]:
     """Load all existing checkpoint files. Returns {subject_id_condition: metrics_dict}."""
     checkpoints = {}
@@ -81,11 +105,144 @@ def save_run_config(output_dir: Path, args: argparse.Namespace):
         "condition": args.condition,
         "max_subjects": args.max_subjects,
         "skip_connectivity": args.skip_connectivity,
+        "save_psd": args.save_psd,
         "age_bins": args.age_bins,
         "pipeline_params": PIPELINE_PARAMS,
     }
     with open(output_dir / "run_config.json", "w") as f:
         json.dump(config, f, indent=2, default=str)
+
+
+def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
+                        age_bins: list, output_path: Path, logger):
+    """Aggregate per-subject PSD curves into normative PSD statistics.
+
+    For each (age_bin, condition, channel), computes mean and SD of
+    log10(PSD) across subjects. Saves as norms_psd.npz.
+
+    The output contains:
+        freqs: (n_freqs,) frequency vector
+        bins: list of bin labels (e.g., "20-29")
+        conditions: list of conditions
+        ch_names: list of 19 channel names
+        mean: (n_bins, n_conditions, n_channels, n_freqs) log10 PSD mean
+        sd: (n_bins, n_conditions, n_channels, n_freqs) log10 PSD SD
+        n: (n_bins, n_conditions) subject counts
+    """
+    # Build lookup: subject_id → age, condition
+    subject_info = {}
+    for s in subjects_for_norms:
+        key = f"{s['subject_id']}_{s['condition']}"
+        subject_info[key] = {"age": s["age"], "condition": s["condition"]}
+
+    # Load all PSD checkpoints
+    psd_files = sorted(psd_dir.glob("*_psd.npz"))
+    if not psd_files:
+        logger.warning("No PSD checkpoints found — skipping normative PSD build.")
+        return
+
+    logger.info(f"Building normative PSD from {len(psd_files)} PSD checkpoints...")
+
+    # Determine bin labels
+    bin_labels = []
+    for i in range(len(age_bins) - 1):
+        bin_labels.append(f"{age_bins[i]}-{age_bins[i + 1] - 1}")
+
+    def age_to_bin(age):
+        for i in range(len(age_bins) - 1):
+            if age_bins[i] <= age < age_bins[i + 1]:
+                return bin_labels[i]
+        return None
+
+    # Collect PSD data grouped by (bin, condition)
+    # {(bin_label, condition): [(ch_names, log10_psds), ...]}
+    grouped = {}
+    ref_freqs = None
+
+    for fpath in psd_files:
+        stem = fpath.stem.replace("_psd", "")  # e.g., "sub-010002_eo"
+        info = subject_info.get(stem)
+        if info is None:
+            continue
+
+        age_bin = age_to_bin(info["age"])
+        if age_bin is None:
+            continue
+
+        psd_data = load_psd_checkpoint(fpath)
+        freqs = psd_data["freqs"]
+        psds = psd_data["psds"]  # (n_ch, n_freqs) in V²/Hz
+        ch_names = psd_data["ch_names"]
+
+        if ref_freqs is None:
+            ref_freqs = freqs
+        elif len(freqs) != len(ref_freqs):
+            continue  # skip mismatched frequency resolution
+
+        # Convert to log10(µV²/Hz)
+        psds_uv = psds * 1e12  # V²/Hz → µV²/Hz
+        psds_uv = np.maximum(psds_uv, 1e-30)  # avoid log(0)
+        log10_psds = np.log10(psds_uv)
+
+        key = (age_bin, info["condition"])
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append((ch_names, log10_psds))
+
+    if not grouped or ref_freqs is None:
+        logger.warning("No valid PSD data to aggregate.")
+        return
+
+    # Get canonical channel list from first entry
+    all_conditions = sorted({k[1] for k in grouped})
+    all_ch_names = list(grouped[next(iter(grouped))][0][0])
+    n_freqs = len(ref_freqs)
+    n_bins = len(bin_labels)
+    n_conds = len(all_conditions)
+    n_chs = len(all_ch_names)
+
+    # Build index maps
+    cond_idx = {c: i for i, c in enumerate(all_conditions)}
+    bin_idx = {b: i for i, b in enumerate(bin_labels)}
+    ch_idx = {ch: i for i, ch in enumerate(all_ch_names)}
+
+    # Aggregate
+    mean_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan)
+    sd_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan)
+    n_arr = np.zeros((n_bins, n_conds), dtype=int)
+
+    for (b_label, cond), entries in grouped.items():
+        bi = bin_idx.get(b_label)
+        ci = cond_idx.get(cond)
+        if bi is None or ci is None:
+            continue
+
+        n_arr[bi, ci] = len(entries)
+
+        # Stack all subjects' PSDs, aligning by channel name
+        stacked = np.full((len(entries), n_chs, n_freqs), np.nan)
+        for si, (ch_names, log_psds) in enumerate(entries):
+            for chi, ch in enumerate(ch_names):
+                target_ci = ch_idx.get(ch)
+                if target_ci is not None and chi < log_psds.shape[0]:
+                    stacked[si, target_ci, :] = log_psds[chi, :]
+
+        mean_arr[bi, ci] = np.nanmean(stacked, axis=0)
+        sd_arr[bi, ci] = np.nanstd(stacked, axis=0, ddof=1)
+
+    np.savez_compressed(
+        output_path,
+        freqs=ref_freqs,
+        bins=np.array(bin_labels),
+        conditions=np.array(all_conditions),
+        ch_names=np.array(all_ch_names),
+        mean=mean_arr,
+        sd=sd_arr,
+        n=n_arr,
+    )
+    logger.info(f"Saved normative PSD to {output_path}")
+    logger.info(f"  Shape: {n_bins} bins × {n_conds} conditions × {n_chs} channels × {n_freqs} freqs")
+    logger.info(f"  Subjects per cell: {n_arr.tolist()}")
 
 
 def main():
@@ -142,12 +299,23 @@ def main():
         help="Path to QC output directory (from lemon_qc.py). "
              "If provided, only subjects in ready.txt are processed.",
     )
+    parser.add_argument(
+        "--save-psd",
+        action="store_true",
+        help="Save aggregated normative PSD curves (mean/SD per channel "
+             "per age bin) as norms_psd.npz for spectral overlay display.",
+    )
     args = parser.parse_args()
 
     # Setup output directory
     output_dir = args.output
     subjects_dir = output_dir / "subjects"
     subjects_dir.mkdir(parents=True, exist_ok=True)
+
+    psd_dir = None
+    if args.save_psd:
+        psd_dir = output_dir / "psd_checkpoints"
+        psd_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logging(output_dir)
     save_run_config(output_dir, args)
@@ -241,6 +409,18 @@ def main():
 
             # Checkpoint
             save_checkpoint(subjects_dir, record.subject_id, record.condition, subject_data)
+
+            # Save PSD checkpoint if requested
+            if psd_dir is not None and result.spectral is not None:
+                psds = result.spectral.get("psds")
+                freqs = result.spectral.get("freqs")
+                ch_names = result.spectral.get("ch_names", [])
+                if psds is not None and freqs is not None:
+                    save_psd_checkpoint(
+                        psd_dir, record.subject_id, record.condition,
+                        freqs, psds, ch_names,
+                    )
+
             subjects_for_norms.append(subject_data)
             processed += 1
 
@@ -286,6 +466,14 @@ def main():
     write_norms_json(norms, norms_json_path)
     write_norms_csv(norms, norms_csv_path)
     write_subjects_csv(subjects_for_norms, subjects_csv_path)
+
+    # Build normative PSD if requested
+    if args.save_psd and psd_dir is not None:
+        norms_psd_path = output_dir / "norms_psd.npz"
+        build_normative_psd(
+            psd_dir, subjects_for_norms, args.age_bins,
+            norms_psd_path, logger,
+        )
 
     logger.info(f"Wrote {len(norms)} normative cells to:")
     logger.info(f"  {norms_json_path}")
