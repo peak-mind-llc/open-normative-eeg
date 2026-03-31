@@ -237,6 +237,179 @@ HUB_NAMES = ["F_mid", "F_L", "F_R", "C_mid", "T_L", "T_R",
 HUB_LABELS = ["F\nmid", "F\nL", "F\nR", "C\nmid", "T\nL", "T\nR",
               "P\nmid", "P\nL", "P\nR", "O"]
 
+# Map each hub to its constituent channels for position averaging
+_HUB_CHANNELS = {
+    "F_mid": ["Fz"], "F_L": ["F3", "F7"], "F_R": ["F4", "F8"],
+    "C_mid": ["Cz"], "T_L": ["T3", "T5"], "T_R": ["T4", "T6"],
+    "P_mid": ["Pz"], "P_L": ["P3"], "P_R": ["P4"], "O": ["O1", "O2"],
+}
+
+
+def _get_hub_head_positions():
+    """Compute 2D head-map positions for each hub by averaging channel locs."""
+    montage = mne.channels.make_standard_montage("standard_1020")
+    ch_pos_3d = montage.get_positions()["ch_pos"]
+
+    # Project 3D -> 2D using MNE's azimuthal equidistant projection
+    # (same as topomaps). We compute it manually from x, y, z.
+    def _project(pos3d):
+        x, y, z = pos3d
+        # Azimuthal equidistant from top of head
+        r = np.sqrt(x**2 + y**2 + z**2)
+        if r == 0:
+            return 0.0, 0.0
+        rho = np.arccos(np.clip(z / r, -1, 1))
+        phi = np.arctan2(y, x)
+        proj_r = rho / np.pi  # normalize
+        return float(proj_r * np.cos(phi)), float(proj_r * np.sin(phi))
+
+    hub_pos = {}
+    for hub, channels in _HUB_CHANNELS.items():
+        positions = [ch_pos_3d[ch] for ch in channels if ch in ch_pos_3d]
+        if positions:
+            mean_3d = np.mean(positions, axis=0)
+            hub_pos[hub] = _project(mean_3d)
+    return hub_pos
+
+
+def _get_hub_matrix(df, condition, age_bin, band, method="dwpli"):
+    """Extract hub-to-hub connectivity matrix from the DataFrame."""
+    matrix = np.zeros((len(HUB_NAMES), len(HUB_NAMES)))
+    has_data = False
+    for i, hub_i in enumerate(HUB_NAMES):
+        ch = f"_hub_{hub_i}"
+        for j, hub_j in enumerate(HUB_NAMES):
+            if i == j:
+                continue
+            metric_name = f"{method}_hub_{hub_j}"
+            mask = (
+                (df["channel"] == ch)
+                & (df["band"] == band)
+                & (df["condition"] == condition)
+                & (df["bin"] == age_bin)
+                & (df["metric"] == metric_name)
+            )
+            row_data = df.loc[mask]
+            if not row_data.empty:
+                matrix[i, j] = row_data.iloc[0]["mean"]
+                has_data = True
+    return matrix if has_data else None
+
+
+def render_connectivity_headmap(df, condition, age_bin, method="dwpli",
+                                dpi=100):
+    """Draw hub-to-hub connectivity on a head outline per band."""
+    bands = [b for b in CONN_BANDS if b in df["band"].unique()]
+    hub_metrics = [m for m in df["metric"].unique()
+                   if m.startswith(f"{method}_hub_")]
+    if not bands or not hub_metrics:
+        return ""
+
+    hub_pos = _get_hub_head_positions()
+    if len(hub_pos) < len(HUB_NAMES):
+        return ""
+
+    n_cols = min(len(bands), 3)
+    n_rows = (len(bands) + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(4.5 * n_cols, 4.5 * n_rows),
+                             squeeze=False)
+
+    # Head outline circle
+    theta = np.linspace(0, 2 * np.pi, 100)
+    head_r = 0.52
+    head_x = head_r * np.cos(theta)
+    head_y = head_r * np.sin(theta)
+
+    # Nose
+    nose_x = [head_r * np.cos(np.pi / 2 - 0.1),
+              head_r * 1.08 * np.cos(np.pi / 2),
+              head_r * np.cos(np.pi / 2 + 0.1)]
+    nose_y = [head_r * np.sin(np.pi / 2 - 0.1),
+              head_r * 1.08 * np.sin(np.pi / 2),
+              head_r * np.sin(np.pi / 2 + 0.1)]
+
+    # Ears
+    ear_y_base = np.linspace(-0.06, 0.06, 20)
+
+    cmap = plt.cm.YlOrRd
+
+    for idx, band in enumerate(bands):
+        row, col = divmod(idx, n_cols)
+        ax = axes[row][col]
+
+        matrix = _get_hub_matrix(df, condition, age_bin, band, method)
+        if matrix is None:
+            ax.set_visible(False)
+            continue
+
+        # Draw head outline
+        ax.plot(head_x, head_y, color="k", linewidth=1.5)
+        ax.plot(nose_x, nose_y, color="k", linewidth=1.5)
+        # Left ear
+        ax.plot(-head_r - 0.02 + 0.015 * np.sin(ear_y_base * 25),
+                ear_y_base, color="k", linewidth=1.5)
+        # Right ear
+        ax.plot(head_r + 0.02 - 0.015 * np.sin(ear_y_base * 25),
+                ear_y_base, color="k", linewidth=1.5)
+
+        # Normalize connectivity values for line width/color
+        max_val = np.max(matrix)
+        if max_val == 0:
+            max_val = 1.0
+
+        # Draw edges (connections)
+        for i in range(len(HUB_NAMES)):
+            for j in range(i + 1, len(HUB_NAMES)):
+                val = matrix[i, j]
+                if val < 0.02:  # skip very weak connections
+                    continue
+                norm_val = val / max_val
+                x0, y0 = hub_pos[HUB_NAMES[i]]
+                x1, y1 = hub_pos[HUB_NAMES[j]]
+                ax.plot([x0, x1], [y0, y1],
+                        color=cmap(norm_val),
+                        linewidth=0.5 + 4.0 * norm_val,
+                        alpha=0.3 + 0.6 * norm_val,
+                        solid_capstyle="round",
+                        zorder=1)
+
+        # Draw hub nodes
+        for i, hub in enumerate(HUB_NAMES):
+            x, y = hub_pos[hub]
+            strength = np.sum(matrix[i, :])
+            node_size = 60 + 200 * (strength / max(max_val * len(HUB_NAMES), 1))
+            ax.scatter(x, y, s=node_size, c=[cmap(0.6)],
+                       edgecolors="k", linewidth=0.8, zorder=3)
+            ax.text(x, y - 0.06, HUB_NAMES[i].replace("_", "\n"),
+                    ha="center", va="top", fontsize=6, zorder=4)
+
+        ax.set_xlim(-0.65, 0.65)
+        ax.set_ylim(-0.65, 0.7)
+        ax.set_aspect("equal")
+        ax.axis("off")
+        ax.set_title(band, fontsize=11, fontweight="bold")
+
+        # Colorbar
+        sm = plt.cm.ScalarMappable(
+            cmap=cmap, norm=mcolors.Normalize(vmin=0, vmax=max_val))
+        sm.set_array([])
+        cb = fig.colorbar(sm, ax=ax, shrink=0.5, pad=0.02)
+        cb.ax.tick_params(labelsize=7)
+
+    # Hide unused axes
+    for idx in range(len(bands), n_rows * n_cols):
+        row, col = divmod(idx, n_cols)
+        axes[row][col].set_visible(False)
+
+    fig.suptitle(
+        f"Hub Connectivity ({method.upper()}) — "
+        f"{condition.upper()} / {age_bin}",
+        fontsize=13, y=1.02,
+    )
+    fig.tight_layout()
+    return fig_to_base64(fig, dpi)
+
 
 def render_dwpli_topo(df, info, condition, age_bin, dpi=100):
     """Topographic maps of dwPLI node strength per band."""
@@ -622,23 +795,24 @@ def build_report(norms_path, output_path, dpi=100):
                 make_tabs("dwpli-topo", dwpli_topo_items),
             ))
 
-    # 7. Hub-to-hub connectivity matrices
+    # 7. Hub connectivity head maps
     hub_metrics = [m for m in metrics if m.startswith("dwpli_hub_")]
     if hub_metrics:
-        print("  Rendering hub-to-hub connectivity matrices...")
-        hub_items = []
+        print("  Rendering hub connectivity head maps...")
+        headmap_items = []
         for cond in conditions:
             for age_bin in age_bins:
-                b64 = render_hub_matrix(df, cond, age_bin, "dwpli", dpi)
+                b64 = render_connectivity_headmap(df, cond, age_bin,
+                                                  "dwpli", dpi)
                 if b64:
-                    hub_items.append((
+                    headmap_items.append((
                         f"{cond.upper()} / {age_bin}",
                         f'<img src="data:image/png;base64,{b64}">'
                     ))
-        if hub_items:
+        if headmap_items:
             sections.append(wrap_section(
-                "Hub-to-Hub dwPLI Connectivity",
-                make_tabs("hub-matrix", hub_items),
+                "Hub Connectivity Head Maps (dwPLI)",
+                make_tabs("conn-headmap", headmap_items),
             ))
 
     # 8. Distribution quality
