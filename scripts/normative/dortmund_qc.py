@@ -73,7 +73,7 @@ MAX_DURATION_S = 300.0        # 5 min — warn above this
 
 # Signal quality thresholds (adult, same as LEMON)
 FLAT_VARIANCE_UV2 = 0.1       # uV^2 — below this, channel is flat
-RAILED_AMPLITUDE_UV = 500.0   # uV — above this, channel may be railed
+RAILED_AMPLITUDE_UV = 1000.0  # uV — above this on demeaned data, channel may be railed
 RAILED_FRACTION = 0.10        # >10% of samples railed -> flag
 NOISE_SD_THRESHOLD = 3.0      # 50 Hz power > 3 SD above mean -> flag
 MEDIAN_AMP_WARN_UV = 200.0    # overall median amplitude warning
@@ -721,13 +721,13 @@ def check_signal_quality(raw, data_uv) -> tuple[dict, list]:
     # Usable duration after artifact removal
     usable_sec = round((n_epochs - n_artifact_epochs) * ARTIFACT_EPOCH_SEC, 1)
 
-    # DC offset per channel
+    # DC offset per channel — reported as metadata only (universal in EDF recordings)
     dc_offsets = {ch: round(float(np.mean(eeg_data[j])), 2)
                   for j, ch in enumerate(eeg_names)}
     large_offset = [ch for ch, off in dc_offsets.items()
                     if abs(off) > DC_OFFSET_WARN_UV]
-    if large_offset:
-        issues.append(("warn", f"large DC offset (>{DC_OFFSET_WARN_UV} uV): {', '.join(large_offset)}"))
+    # Note: DC offset warning suppressed — universal in unreferenced EDF data.
+    # Offsets are recorded in metrics for transparency but do not affect verdict.
 
     metrics = {
         "median_amplitude_uv": round(overall_median, 2),
