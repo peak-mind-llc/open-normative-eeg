@@ -1,0 +1,613 @@
+{
+  "n_subjects": 20,
+  "subjects_compared": [
+    "sub-497",
+    "sub-159",
+    "sub-349",
+    "sub-382",
+    "sub-253",
+    "sub-568",
+    "sub-420",
+    "sub-227",
+    "sub-587",
+    "sub-379",
+    "sub-267",
+    "sub-268",
+    "sub-558",
+    "sub-362",
+    "sub-509",
+    "sub-589",
+    "sub-393",
+    "sub-577",
+    "sub-434",
+    "sub-585"
+  ],
+  "band_statistics": {
+    "Delta": {
+      "mean_diff_log10": -0.0277,
+      "std_diff_log10": 1.31,
+      "cohens_d": -0.021
+    },
+    "Theta": {
+      "mean_diff_log10": 0.0036,
+      "std_diff_log10": 1.2136,
+      "cohens_d": 0.003
+    },
+    "Alpha": {
+      "mean_diff_log10": 0.1217,
+      "std_diff_log10": 1.1064,
+      "cohens_d": 0.11
+    },
+    "Beta": {
+      "mean_diff_log10": 0.0517,
+      "std_diff_log10": 0.9717,
+      "cohens_d": 0.053
+    }
+  },
+  "mean_alpha_peak_shift_hz": 0.39,
+  "fatigue_signatures": [
+    "No strong pre/post differences detected in this sample"
+  ],
+  "per_subject": [
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.0421,
+          "post_log10": -11.1767,
+          "diff_log10": -0.1346
+        },
+        "Theta": {
+          "pre_log10": -11.3258,
+          "post_log10": -11.3321,
+          "diff_log10": -0.0063
+        },
+        "Alpha": {
+          "pre_log10": -11.1601,
+          "post_log10": -11.1612,
+          "diff_log10": -0.0011
+        },
+        "Beta": {
+          "pre_log10": -11.1733,
+          "post_log10": -11.1254,
+          "diff_log10": 0.0479
+        }
+      },
+      "alpha_peak_pre_hz": 9.765625,
+      "alpha_peak_post_hz": 10.7421875,
+      "alpha_peak_shift_hz": 0.98,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -9.2335,
+          "post_log10": -9.7068,
+          "diff_log10": -0.4733
+        },
+        "Theta": {
+          "pre_log10": -9.7143,
+          "post_log10": -10.1665,
+          "diff_log10": -0.4522
+        },
+        "Alpha": {
+          "pre_log10": -10.0029,
+          "post_log10": -10.2367,
+          "diff_log10": -0.2338
+        },
+        "Beta": {
+          "pre_log10": -10.0455,
+          "post_log10": -10.3991,
+          "diff_log10": -0.3536
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": 0.0,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.0692,
+          "post_log10": -11.0493,
+          "diff_log10": 0.0199
+        },
+        "Theta": {
+          "pre_log10": -11.3268,
+          "post_log10": -11.2633,
+          "diff_log10": 0.0634
+        },
+        "Alpha": {
+          "pre_log10": -11.1352,
+          "post_log10": -10.8797,
+          "diff_log10": 0.2556
+        },
+        "Beta": {
+          "pre_log10": -10.8562,
+          "post_log10": -10.7122,
+          "diff_log10": 0.144
+        }
+      },
+      "alpha_peak_pre_hz": 11.71875,
+      "alpha_peak_post_hz": 10.7421875,
+      "alpha_peak_shift_hz": -0.98,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.2218,
+          "post_log10": -10.3638,
+          "diff_log10": 0.858
+        },
+        "Theta": {
+          "pre_log10": -11.34,
+          "post_log10": -10.2499,
+          "diff_log10": 1.0901
+        },
+        "Alpha": {
+          "pre_log10": -11.6244,
+          "post_log10": -10.2213,
+          "diff_log10": 1.4031
+        },
+        "Beta": {
+          "pre_log10": -11.3831,
+          "post_log10": -9.92,
+          "diff_log10": 1.4631
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": 0.0,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -8.04,
+          "post_log10": -8.7692,
+          "diff_log10": -0.7292
+        },
+        "Theta": {
+          "pre_log10": -8.4016,
+          "post_log10": -9.3477,
+          "diff_log10": -0.9461
+        },
+        "Alpha": {
+          "pre_log10": -8.9568,
+          "post_log10": -9.6929,
+          "diff_log10": -0.736
+        },
+        "Beta": {
+          "pre_log10": -8.8257,
+          "post_log10": -9.6195,
+          "diff_log10": -0.7938
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": 0.0,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -8.1492,
+          "post_log10": -9.656,
+          "diff_log10": -1.5068
+        },
+        "Theta": {
+          "pre_log10": -8.7894,
+          "post_log10": -10.005,
+          "diff_log10": -1.2156
+        },
+        "Alpha": {
+          "pre_log10": -9.143,
+          "post_log10": -10.5744,
+          "diff_log10": -1.4313
+        },
+        "Beta": {
+          "pre_log10": -9.0961,
+          "post_log10": -10.2213,
+          "diff_log10": -1.1252
+        }
+      },
+      "alpha_peak_pre_hz": 9.765625,
+      "alpha_peak_post_hz": 12.6953125,
+      "alpha_peak_shift_hz": 2.93,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -10.8173,
+          "post_log10": -7.8589,
+          "diff_log10": 2.9584
+        },
+        "Theta": {
+          "pre_log10": -11.2666,
+          "post_log10": -8.4254,
+          "diff_log10": 2.8412
+        },
+        "Alpha": {
+          "pre_log10": -11.519,
+          "post_log10": -8.7737,
+          "diff_log10": 2.7453
+        },
+        "Beta": {
+          "pre_log10": -11.0283,
+          "post_log10": -8.7328,
+          "diff_log10": 2.2956
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": 0.0,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -9.0287,
+          "post_log10": -11.5021,
+          "diff_log10": -2.4734
+        },
+        "Theta": {
+          "pre_log10": -9.533,
+          "post_log10": -11.5807,
+          "diff_log10": -2.0477
+        },
+        "Alpha": {
+          "pre_log10": -9.8942,
+          "post_log10": -11.4974,
+          "diff_log10": -1.6032
+        },
+        "Beta": {
+          "pre_log10": -9.832,
+          "post_log10": -11.2425,
+          "diff_log10": -1.4105
+        }
+      },
+      "alpha_peak_pre_hz": 10.7421875,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": -1.95,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.2837,
+          "post_log10": -10.9126,
+          "diff_log10": 0.3712
+        },
+        "Theta": {
+          "pre_log10": -11.5935,
+          "post_log10": -11.3739,
+          "diff_log10": 0.2196
+        },
+        "Alpha": {
+          "pre_log10": -11.4915,
+          "post_log10": -11.2773,
+          "diff_log10": 0.2142
+        },
+        "Beta": {
+          "pre_log10": -10.9479,
+          "post_log10": -10.9067,
+          "diff_log10": 0.0413
+        }
+      },
+      "alpha_peak_pre_hz": 9.765625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": -0.98,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.0661,
+          "post_log10": -11.2154,
+          "diff_log10": -0.1493
+        },
+        "Theta": {
+          "pre_log10": -11.0512,
+          "post_log10": -11.0486,
+          "diff_log10": 0.0026
+        },
+        "Alpha": {
+          "pre_log10": -11.1163,
+          "post_log10": -10.6105,
+          "diff_log10": 0.5058
+        },
+        "Beta": {
+          "pre_log10": -11.1659,
+          "post_log10": -11.0843,
+          "diff_log10": 0.0817
+        }
+      },
+      "alpha_peak_pre_hz": 9.765625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": -0.98,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -10.606,
+          "post_log10": -11.1871,
+          "diff_log10": -0.5811
+        },
+        "Theta": {
+          "pre_log10": -11.2648,
+          "post_log10": -11.3276,
+          "diff_log10": -0.0628
+        },
+        "Alpha": {
+          "pre_log10": -11.4266,
+          "post_log10": -11.4863,
+          "diff_log10": -0.0598
+        },
+        "Beta": {
+          "pre_log10": -10.9169,
+          "post_log10": -11.1771,
+          "diff_log10": -0.2603
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 10.7421875,
+      "alpha_peak_shift_hz": 1.95,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.5099,
+          "post_log10": -8.9389,
+          "diff_log10": 2.571
+        },
+        "Theta": {
+          "pre_log10": -11.7924,
+          "post_log10": -9.557,
+          "diff_log10": 2.2354
+        },
+        "Alpha": {
+          "pre_log10": -11.8931,
+          "post_log10": -9.8464,
+          "diff_log10": 2.0468
+        },
+        "Beta": {
+          "pre_log10": -11.2274,
+          "post_log10": -9.7279,
+          "diff_log10": 1.4995
+        }
+      },
+      "alpha_peak_pre_hz": 9.765625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": -0.98,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.0115,
+          "post_log10": -10.9124,
+          "diff_log10": 0.0991
+        },
+        "Theta": {
+          "pre_log10": -11.3558,
+          "post_log10": -11.2724,
+          "diff_log10": 0.0835
+        },
+        "Alpha": {
+          "pre_log10": -11.3971,
+          "post_log10": -11.3294,
+          "diff_log10": 0.0678
+        },
+        "Beta": {
+          "pre_log10": -11.2229,
+          "post_log10": -11.0962,
+          "diff_log10": 0.1267
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": 0.0,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -10.7087,
+          "post_log10": -9.2921,
+          "diff_log10": 1.4166
+        },
+        "Theta": {
+          "pre_log10": -11.1285,
+          "post_log10": -9.8041,
+          "diff_log10": 1.3244
+        },
+        "Alpha": {
+          "pre_log10": -11.4065,
+          "post_log10": -10.1683,
+          "diff_log10": 1.2381
+        },
+        "Beta": {
+          "pre_log10": -11.1812,
+          "post_log10": -10.088,
+          "diff_log10": 1.0932
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 9.765625,
+      "alpha_peak_shift_hz": 0.98,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -10.8896,
+          "post_log10": -11.0611,
+          "diff_log10": -0.1714
+        },
+        "Theta": {
+          "pre_log10": -11.3526,
+          "post_log10": -11.295,
+          "diff_log10": 0.0576
+        },
+        "Alpha": {
+          "pre_log10": -11.3328,
+          "post_log10": -11.1923,
+          "diff_log10": 0.1405
+        },
+        "Beta": {
+          "pre_log10": -11.0603,
+          "post_log10": -10.9471,
+          "diff_log10": 0.1132
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": 0.0,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -10.7437,
+          "post_log10": -10.6196,
+          "diff_log10": 0.1241
+        },
+        "Theta": {
+          "pre_log10": -11.1237,
+          "post_log10": -11.0581,
+          "diff_log10": 0.0657
+        },
+        "Alpha": {
+          "pre_log10": -11.4875,
+          "post_log10": -11.3127,
+          "diff_log10": 0.1748
+        },
+        "Beta": {
+          "pre_log10": -11.2539,
+          "post_log10": -10.8954,
+          "diff_log10": 0.3585
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 10.7421875,
+      "alpha_peak_shift_hz": 1.95,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -11.3697,
+          "post_log10": -11.1683,
+          "diff_log10": 0.2014
+        },
+        "Theta": {
+          "pre_log10": -11.7184,
+          "post_log10": -11.676,
+          "diff_log10": 0.0424
+        },
+        "Alpha": {
+          "pre_log10": -11.7504,
+          "post_log10": -11.7124,
+          "diff_log10": 0.038
+        },
+        "Beta": {
+          "pre_log10": -11.5144,
+          "post_log10": -11.3868,
+          "diff_log10": 0.1276
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 8.7890625,
+      "alpha_peak_shift_hz": 0.0,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -8.4652,
+          "post_log10": -10.0741,
+          "diff_log10": -1.6089
+        },
+        "Theta": {
+          "pre_log10": -8.884,
+          "post_log10": -10.5668,
+          "diff_log10": -1.6828
+        },
+        "Alpha": {
+          "pre_log10": -9.6118,
+          "post_log10": -10.7982,
+          "diff_log10": -1.1864
+        },
+        "Beta": {
+          "pre_log10": -9.3771,
+          "post_log10": -10.6941,
+          "diff_log10": -1.317
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 10.7421875,
+      "alpha_peak_shift_hz": 1.95,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -9.0155,
+          "post_log10": -10.4836,
+          "diff_log10": -1.4681
+        },
+        "Theta": {
+          "pre_log10": -9.5718,
+          "post_log10": -11.0875,
+          "diff_log10": -1.5157
+        },
+        "Alpha": {
+          "pre_log10": -9.8172,
+          "post_log10": -10.948,
+          "diff_log10": -1.1308
+        },
+        "Beta": {
+          "pre_log10": -9.8279,
+          "post_log10": -10.8868,
+          "diff_log10": -1.0589
+        }
+      },
+      "alpha_peak_pre_hz": 8.7890625,
+      "alpha_peak_post_hz": 10.7421875,
+      "alpha_peak_shift_hz": 1.95,
+      "condition": "eo"
+    },
+    {
+      "band_differences": {
+        "Delta": {
+          "pre_log10": -10.5064,
+          "post_log10": -10.3831,
+          "diff_log10": 0.1233
+        },
+        "Theta": {
+          "pre_log10": -11.3374,
+          "post_log10": -11.3619,
+          "diff_log10": -0.0245
+        },
+        "Alpha": {
+          "pre_log10": -11.6022,
+          "post_log10": -11.6165,
+          "diff_log10": -0.0143
+        },
+        "Beta": {
+          "pre_log10": -10.9977,
+          "post_log10": -11.0374,
+          "diff_log10": -0.0397
+        }
+      },
+      "alpha_peak_pre_hz": 10.7421875,
+      "alpha_peak_post_hz": 11.71875,
+      "alpha_peak_shift_hz": 0.98,
+      "condition": "eo"
+    }
+  ]
+}

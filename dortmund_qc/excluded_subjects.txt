@@ -1,0 +1,117 @@
+sub-004	[EO] median amplitude=213.4 uV, exceeds 200.0; [EO] gross artifact=67.8%, exceeds 50.0%
+sub-009	[EC] median amplitude=202.0 uV, exceeds 200.0; [EC] gross artifact=60.6%, exceeds 50.0%
+sub-014	[EC] median amplitude=269.3 uV, exceeds 200.0; [EC] gross artifact=83.1%, exceeds 50.0%
+sub-015	[EO] median amplitude=285.0 uV, exceeds 200.0; [EO] gross artifact=72.0%, exceeds 50.0%; [EC] gross artifact=56.5%, exceeds 50.0%
+sub-021	[EC] gross artifact=50.8%, exceeds 50.0%
+sub-026	[EO] median amplitude=888.9 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%; [EC] median amplitude=460.9 uV, exceeds 200.0; [EC] gross artifact=100.0%, exceeds 50.0%
+sub-035	[EO] gross artifact=59.5%, exceeds 50.0%; [EC] median amplitude=235.8 uV, exceeds 200.0; [EC] gross artifact=56.3%, exceeds 50.0%
+sub-043	[EO] gross artifact=50.3%, exceeds 50.0%; [EC] median amplitude=217.6 uV, exceeds 200.0; [EC] gross artifact=64.3%, exceeds 50.0%
+sub-052	[EO] median amplitude=387.7 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%; [EC] gross artifact=55.7%, exceeds 50.0%
+sub-055	[EO] median amplitude=210.7 uV, exceeds 200.0; [EO] gross artifact=70.9%, exceeds 50.0%; [EC] median amplitude=346.8 uV, exceeds 200.0; [EC] gross artifact=78.1%, exceeds 50.0%
+sub-059	[EO] median amplitude=331.3 uV, exceeds 200.0; [EO] gross artifact=89.2%, exceeds 50.0%; [EC] median amplitude=345.7 uV, exceeds 200.0; [EC] gross artifact=82.1%, exceeds 50.0%
+sub-066	[EO] gross artifact=56.3%, exceeds 50.0%; [EC] median amplitude=359.0 uV, exceeds 200.0; [EC] gross artifact=81.8%, exceeds 50.0%
+sub-071	[EO] gross artifact=53.6%, exceeds 50.0%; [EC] gross artifact=52.5%, exceeds 50.0%
+sub-077	[EC] median amplitude=349.9 uV, exceeds 200.0; [EC] gross artifact=80.0%, exceeds 50.0%
+sub-079	[EO] gross artifact=56.3%, exceeds 50.0%; [EC] median amplitude=534.0 uV, exceeds 200.0; [EC] gross artifact=84.7%, exceeds 50.0%
+sub-080	[EC] gross artifact=57.7%, exceeds 50.0%
+sub-092	[EC] gross artifact=54.4%, exceeds 50.0%
+sub-100	[EC] median amplitude=346.4 uV, exceeds 200.0; [EC] gross artifact=80.3%, exceeds 50.0%
+sub-105	[EO] gross artifact=69.2%, exceeds 50.0%; [EC] gross artifact=58.8%, exceeds 50.0%
+sub-111	[EC] gross artifact=51.6%, exceeds 50.0%
+sub-113	[EC] median amplitude=646.1 uV, exceeds 200.0; [EC] gross artifact=100.0%, exceeds 50.0%
+sub-118	[EO] median amplitude=315.5 uV, exceeds 200.0; [EO] gross artifact=74.6%, exceeds 50.0%; [EC] gross artifact=60.5%, exceeds 50.0%
+sub-120	[EO] median amplitude=201.0 uV, exceeds 200.0; [EO] gross artifact=62.3%, exceeds 50.0%; [EC] gross artifact=51.9%, exceeds 50.0%
+sub-121	[EO] median amplitude=303.8 uV, exceeds 200.0; [EO] gross artifact=78.0%, exceeds 50.0%; [EC] median amplitude=500.8 uV, exceeds 200.0; [EC] gross artifact=100.0%, exceeds 50.0%
+sub-135	[EC] median amplitude=333.3 uV, exceeds 200.0; [EC] gross artifact=81.4%, exceeds 50.0%
+sub-137	[EO] median amplitude=267.2 uV, exceeds 200.0; [EO] gross artifact=78.5%, exceeds 50.0%; [EC] median amplitude=355.4 uV, exceeds 200.0; [EC] gross artifact=87.1%, exceeds 50.0%
+sub-140	[EO] gross artifact=53.8%, exceeds 50.0%; [EC] median amplitude=253.8 uV, exceeds 200.0; [EC] gross artifact=74.9%, exceeds 50.0%
+sub-144	[EO] median amplitude=222.2 uV, exceeds 200.0; [EO] gross artifact=64.7%, exceeds 50.0%; [EC] median amplitude=361.2 uV, exceeds 200.0; [EC] gross artifact=76.0%, exceeds 50.0%
+sub-167	[EO] gross artifact=59.3%, exceeds 50.0%
+sub-183	[EC] gross artifact=59.0%, exceeds 50.0%
+sub-194	[EC] median amplitude=235.7 uV, exceeds 200.0; [EC] gross artifact=63.6%, exceeds 50.0%
+sub-196	[EO] median amplitude=388.3 uV, exceeds 200.0; [EO] gross artifact=93.5%, exceeds 50.0%
+sub-203	[EO] median amplitude=214.1 uV, exceeds 200.0; [EO] gross artifact=62.1%, exceeds 50.0%; [EC] median amplitude=278.6 uV, exceeds 200.0; [EC] gross artifact=75.4%, exceeds 50.0%
+sub-207	[EC] gross artifact=60.1%, exceeds 50.0%
+sub-208	[EC] gross artifact=55.6%, exceeds 50.0%
+sub-210	[EO] median amplitude=369.7 uV, exceeds 200.0; [EO] gross artifact=95.6%, exceeds 50.0%; [EC] median amplitude=304.2 uV, exceeds 200.0; [EC] gross artifact=78.7%, exceeds 50.0%
+sub-222	[EO] median amplitude=421.2 uV, exceeds 200.0; [EO] gross artifact=91.4%, exceeds 50.0%; [EC] median amplitude=247.2 uV, exceeds 200.0; [EC] gross artifact=65.6%, exceeds 50.0%
+sub-230	[EO] median amplitude=623.9 uV, exceeds 200.0; [EO] gross artifact=89.1%, exceeds 50.0%; [EC] duration=1.0 min, below 2 min minimum
+sub-235	[EO] gross artifact=60.1%, exceeds 50.0%; [EC] median amplitude=225.5 uV, exceeds 200.0; [EC] gross artifact=63.2%, exceeds 50.0%
+sub-238	[EO] median amplitude=269.0 uV, exceeds 200.0; [EO] gross artifact=71.2%, exceeds 50.0%; [EC] median amplitude=207.6 uV, exceeds 200.0; [EC] gross artifact=69.0%, exceeds 50.0%
+sub-247	[EC] gross artifact=56.3%, exceeds 50.0%
+sub-253	[EO] median amplitude=951.1 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%; [EC] median amplitude=307.7 uV, exceeds 200.0; [EC] gross artifact=73.8%, exceeds 50.0%
+sub-257	[EO] median amplitude=247.5 uV, exceeds 200.0; [EO] gross artifact=80.6%, exceeds 50.0%; [EC] gross artifact=51.4%, exceeds 50.0%
+sub-274	[EC] gross artifact=56.8%, exceeds 50.0%
+sub-285	[EC] gross artifact=53.0%, exceeds 50.0%
+sub-289	[EO] median amplitude=242.1 uV, exceeds 200.0; [EO] gross artifact=68.1%, exceeds 50.0%; [EC] median amplitude=220.9 uV, exceeds 200.0; [EC] gross artifact=70.2%, exceeds 50.0%
+sub-292	[EC] median amplitude=201.5 uV, exceeds 200.0; [EC] gross artifact=61.7%, exceeds 50.0%
+sub-305	[EC] median amplitude=478.8 uV, exceeds 200.0; [EC] gross artifact=88.0%, exceeds 50.0%
+sub-312	[EC] median amplitude=202.2 uV, exceeds 200.0; [EC] gross artifact=59.2%, exceeds 50.0%
+sub-316	[EC] gross artifact=51.6%, exceeds 50.0%
+sub-320	[EC] median amplitude=250.8 uV, exceeds 200.0; [EC] gross artifact=64.5%, exceeds 50.0%
+sub-322	[EO] median amplitude=962.0 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%
+sub-323	[EO] gross artifact=55.6%, exceeds 50.0%
+sub-324	[EO] gross artifact=56.8%, exceeds 50.0%
+sub-330	[EC] median amplitude=231.2 uV, exceeds 200.0; [EC] gross artifact=67.3%, exceeds 50.0%
+sub-338	[EC] gross artifact=56.7%, exceeds 50.0%
+sub-339	[EO] median amplitude=273.8 uV, exceeds 200.0; [EO] gross artifact=69.6%, exceeds 50.0%; [EC] median amplitude=296.6 uV, exceeds 200.0; [EC] gross artifact=73.6%, exceeds 50.0%
+sub-342	[EO] median amplitude=545.9 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%; [EC] median amplitude=244.7 uV, exceeds 200.0; [EC] gross artifact=67.6%, exceeds 50.0%
+sub-348	[EC] gross artifact=53.7%, exceeds 50.0%
+sub-360	[EO] median amplitude=252.6 uV, exceeds 200.0; [EO] gross artifact=78.8%, exceeds 50.0%
+sub-362	[EO] median amplitude=239.9 uV, exceeds 200.0; [EO] gross artifact=76.5%, exceeds 50.0%; [EC] gross artifact=65.4%, exceeds 50.0%
+sub-365	[EO] median amplitude=281.7 uV, exceeds 200.0; [EO] gross artifact=82.8%, exceeds 50.0%; [EC] median amplitude=290.8 uV, exceeds 200.0; [EC] gross artifact=80.1%, exceeds 50.0%
+sub-371	[EO] median amplitude=391.2 uV, exceeds 200.0; [EO] gross artifact=78.4%, exceeds 50.0%; [EC] median amplitude=546.4 uV, exceeds 200.0; [EC] gross artifact=84.9%, exceeds 50.0%
+sub-375	[EO] median amplitude=314.3 uV, exceeds 200.0; [EO] gross artifact=74.3%, exceeds 50.0%; [EC] gross artifact=60.0%, exceeds 50.0%
+sub-376	[EC] median amplitude=229.9 uV, exceeds 200.0; [EC] gross artifact=77.7%, exceeds 50.0%
+sub-378	[EO] median amplitude=202.8 uV, exceeds 200.0; [EO] gross artifact=63.9%, exceeds 50.0%; [EC] median amplitude=211.3 uV, exceeds 200.0; [EC] gross artifact=81.5%, exceeds 50.0%
+sub-380	[EO] gross artifact=56.9%, exceeds 50.0%
+sub-384	[EO] median amplitude=382.9 uV, exceeds 200.0; [EO] gross artifact=83.3%, exceeds 50.0%
+sub-386	[EO] median amplitude=243.2 uV, exceeds 200.0; [EO] gross artifact=66.7%, exceeds 50.0%; [EC] median amplitude=217.4 uV, exceeds 200.0; [EC] gross artifact=64.8%, exceeds 50.0%
+sub-389	[EC] gross artifact=51.1%, exceeds 50.0%
+sub-391	[EO] gross artifact=70.6%, exceeds 50.0%; [EC] median amplitude=221.6 uV, exceeds 200.0; [EC] gross artifact=75.7%, exceeds 50.0%
+sub-404	[EC] gross artifact=52.4%, exceeds 50.0%
+sub-409	[EC] median amplitude=216.3 uV, exceeds 200.0; [EC] gross artifact=67.7%, exceeds 50.0%
+sub-411	[EO] median amplitude=348.4 uV, exceeds 200.0; [EO] gross artifact=75.9%, exceeds 50.0%; [EC] median amplitude=568.7 uV, exceeds 200.0; [EC] gross artifact=87.0%, exceeds 50.0%
+sub-412	[EC] median amplitude=210.3 uV, exceeds 200.0; [EC] gross artifact=59.1%, exceeds 50.0%
+sub-414	[EO] gross artifact=51.9%, exceeds 50.0%
+sub-415	[EO] median amplitude=887.9 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%
+sub-420	[EC] gross artifact=69.9%, exceeds 50.0%
+sub-425	[EC] median amplitude=203.0 uV, exceeds 200.0; [EC] gross artifact=63.8%, exceeds 50.0%
+sub-429	[EC] gross artifact=51.9%, exceeds 50.0%
+sub-433	[EO] gross artifact=55.1%, exceeds 50.0%; [EC] median amplitude=284.1 uV, exceeds 200.0; [EC] gross artifact=70.1%, exceeds 50.0%
+sub-438	[EC] gross artifact=67.6%, exceeds 50.0%
+sub-448	[EC] gross artifact=61.0%, exceeds 50.0%
+sub-453	[EO] gross artifact=63.9%, exceeds 50.0%
+sub-458	[EC] gross artifact=57.1%, exceeds 50.0%
+sub-460	[EC] gross artifact=57.7%, exceeds 50.0%
+sub-463	[EO] median amplitude=282.5 uV, exceeds 200.0; [EO] gross artifact=70.7%, exceeds 50.0%; [EC] median amplitude=476.4 uV, exceeds 200.0; [EC] gross artifact=81.7%, exceeds 50.0%
+sub-465	[EO] gross artifact=55.8%, exceeds 50.0%
+sub-472	[EO] gross artifact=65.3%, exceeds 50.0%
+sub-473	[EO] gross artifact=52.5%, exceeds 50.0%
+sub-474	[EO] median amplitude=882.6 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%
+sub-491	[EO] median amplitude=248.9 uV, exceeds 200.0; [EO] gross artifact=75.6%, exceeds 50.0%; [EC] gross artifact=75.8%, exceeds 50.0%
+sub-492	[EO] gross artifact=56.5%, exceeds 50.0%
+sub-493	[EC] median amplitude=1779.4 uV, exceeds 200.0; [EC] gross artifact=100.0%, exceeds 50.0%
+sub-494	[EC] gross artifact=55.7%, exceeds 50.0%
+sub-503	[EO] median amplitude=215.8 uV, exceeds 200.0; [EO] gross artifact=74.3%, exceeds 50.0%
+sub-505	[EO] gross artifact=59.8%, exceeds 50.0%; [EC] gross artifact=62.0%, exceeds 50.0%
+sub-506	[EC] gross artifact=58.8%, exceeds 50.0%
+sub-517	[EO] median amplitude=329.7 uV, exceeds 200.0; [EO] gross artifact=79.5%, exceeds 50.0%
+sub-518	[EO] median amplitude=223.7 uV, exceeds 200.0; [EO] gross artifact=74.1%, exceeds 50.0%; [EC] median amplitude=271.6 uV, exceeds 200.0; [EC] gross artifact=65.4%, exceeds 50.0%
+sub-526	[EO] median amplitude=259.4 uV, exceeds 200.0; [EO] gross artifact=93.2%, exceeds 50.0%; [EC] median amplitude=560.4 uV, exceeds 200.0; [EC] gross artifact=100.0%, exceeds 50.0%
+sub-534	[EC] gross artifact=61.7%, exceeds 50.0%
+sub-536	[EC] gross artifact=59.1%, exceeds 50.0%
+sub-541	[EC] gross artifact=57.4%, exceeds 50.0%
+sub-542	[EC] gross artifact=53.0%, exceeds 50.0%
+sub-545	[EC] gross artifact=68.5%, exceeds 50.0%
+sub-547	[EO] median amplitude=313.2 uV, exceeds 200.0; [EO] gross artifact=90.2%, exceeds 50.0%
+sub-550	[EC] gross artifact=53.8%, exceeds 50.0%
+sub-553	[EC] median amplitude=276.3 uV, exceeds 200.0; [EC] gross artifact=75.3%, exceeds 50.0%
+sub-554	[EC] gross artifact=62.0%, exceeds 50.0%
+sub-557	[EC] median amplitude=327.2 uV, exceeds 200.0; [EC] gross artifact=82.4%, exceeds 50.0%
+sub-562	[EO] median amplitude=310.0 uV, exceeds 200.0; [EO] gross artifact=84.9%, exceeds 50.0%
+sub-566	[EO] gross artifact=62.6%, exceeds 50.0%; [EC] gross artifact=68.6%, exceeds 50.0%
+sub-577	[EO] median amplitude=482.2 uV, exceeds 200.0; [EO] gross artifact=100.0%, exceeds 50.0%
+sub-590	[EO] median amplitude=298.3 uV, exceeds 200.0; [EO] gross artifact=76.0%, exceeds 50.0%
+sub-598	[EC] median amplitude=287.0 uV, exceeds 200.0; [EC] gross artifact=71.6%, exceeds 50.0%
+sub-605	[EO] gross artifact=66.7%, exceeds 50.0%; [EC] median amplitude=328.8 uV, exceeds 200.0; [EC] gross artifact=73.8%, exceeds 50.0%
