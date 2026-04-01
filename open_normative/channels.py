@@ -161,7 +161,25 @@ _LOADERS = {
     ".edf": mne.io.read_raw_edf,
     ".set": mne.io.read_raw_eeglab,
     ".fif": mne.io.read_raw_fif,
+    ".mff": mne.io.read_raw_egi,
 }
+
+
+def set_egi128_montage(raw: mne.io.Raw) -> mne.io.Raw:
+    """Set the GSN-HydroCel-128 montage on an EGI raw object if needed.
+
+    EGI 128-channel data uses electrode names like 'E1', 'E2', ..., 'E128'
+    plus 'Cz'. This function sets the standard montage so that spatial
+    nearest-neighbor channel mapping can work.
+    """
+    if raw.get_montage() is not None:
+        return raw
+    try:
+        montage = mne.channels.make_standard_montage("GSN-HydroCel-128")
+        raw.set_montage(montage, on_missing="ignore", verbose=False)
+    except Exception:
+        pass
+    return raw
 
 
 def load_and_standardize(filepath: str | Path) -> mne.io.Raw:

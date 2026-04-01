@@ -48,6 +48,16 @@ def test_build_normative_no_log_transform_relative_power(mock_subject_metrics):
         assert cell.log_transformed is False
 
 
+def test_build_normative_log_transform_corrected_absolute_power(mock_subject_metrics):
+    norms = build_normative(mock_subject_metrics)
+    corr_abs_cells = [c for c in norms if c.metric == "corrected_absolute_power"]
+    if corr_abs_cells:
+        cell = corr_abs_cells[0]
+        assert cell.log_transformed is True
+        assert cell.log_mean is not None
+        assert cell.log_sd is not None
+
+
 def test_build_normative_percentiles(mock_subject_metrics):
     norms = build_normative(mock_subject_metrics)
     for cell in norms:

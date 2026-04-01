@@ -62,8 +62,17 @@ def compute_band_power(
     return band_power
 
 
-def compute_band_ratios(band_power: dict, ch_names: list[str]) -> dict:
-    """Compute key band ratios at each channel."""
+def compute_band_ratios(
+    band_power: dict, ch_names: list[str], power_key: str = "absolute"
+) -> dict:
+    """Compute key band ratios at each channel.
+
+    Args:
+        band_power: Dict of {band_name: {power_key: array, ...}}.
+        ch_names: Channel names.
+        power_key: Key for absolute power arrays (e.g. "absolute" or
+            "corrected_absolute").
+    """
     ratio_defs = {
         "Theta/Beta": ("Theta", "Beta"),
         "Theta/Beta1": ("Theta", "Beta1"),
@@ -73,8 +82,10 @@ def compute_band_ratios(band_power: dict, ch_names: list[str]) -> dict:
     ratios = {}
     for ratio_name, (num_band, den_band) in ratio_defs.items():
         if num_band in band_power and den_band in band_power:
-            num = band_power[num_band]["absolute"]
-            den = band_power[den_band]["absolute"]
+            num = band_power[num_band].get(power_key)
+            den = band_power[den_band].get(power_key)
+            if num is None or den is None:
+                continue
             with np.errstate(divide="ignore", invalid="ignore"):
                 ratio = np.where(den > 0, num / den, np.nan)
             ratios[ratio_name] = dict(zip(ch_names, ratio.tolist()))
@@ -167,6 +178,98 @@ def compute_aperiodic(
     return results
 
 
+def compute_corrected_band_power(
+    psds: np.ndarray,
+    freqs: np.ndarray,
+    aperiodic: dict,
+    ch_names: list[str],
+    bands: dict,
+) -> dict:
+    """Compute specparam-corrected (periodic-only) band power per channel.
+
+    Removes the aperiodic (1/f) component from the PSD before computing band
+    power, isolating oscillatory activity. Uses log-space subtraction as per
+    the standard specparam approach.
+
+    Args:
+        psds: Shape (n_channels, n_freqs), in V²/Hz.
+        freqs: Frequency array.
+        aperiodic: Dict from compute_aperiodic() — {ch: {offset, exponent, ...}}.
+        ch_names: Channel names matching psds rows.
+        bands: Dict of {band_name: [fmin, fmax]}.
+
+    Returns:
+        Dict of {band_name: {"corrected_absolute": array, "corrected_relative": array}}.
+        Channels with failed/skipped specparam fits get NaN values.
+    """
+    n_channels = psds.shape[0]
+    # Build periodic-only PSD per channel via log-space subtraction.
+    periodic_psds = np.full_like(psds, np.nan)
+
+    for i, ch in enumerate(ch_names):
+        ap = aperiodic.get(ch, {})
+        fit_quality = ap.get("fit_quality", "skipped")
+        if fit_quality in ("failed", "skipped"):
+            continue
+
+        offset = ap.get("offset", np.nan)
+        exponent = ap.get("exponent", np.nan)
+        if np.isnan(offset) or np.isnan(exponent):
+            continue
+
+        # Specparam works in log10(µV²/Hz) space.
+        # Convert PSD from V²/Hz to µV²/Hz for consistency.
+        psd_uv = psds[i] * 1e12
+
+        # Reconstruct aperiodic in log10 space: L = offset - exponent * log10(f)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log10_freqs = np.log10(freqs)
+        log10_aperiodic = offset - exponent * log10_freqs
+
+        # Full PSD in log10 space
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log10_psd = np.log10(psd_uv)
+
+        # Periodic = full - aperiodic in log10 space
+        periodic_log10 = log10_psd - log10_aperiodic
+
+        # Convert back to linear V²/Hz
+        periodic_linear = np.power(10.0, periodic_log10) * 1e-12
+
+        # Floor at zero (shouldn't be needed with log-space subtraction, but safety)
+        periodic_linear = np.maximum(periodic_linear, 0.0)
+        periodic_psds[i] = periodic_linear
+
+    # Compute band power on periodic-only PSD.
+    # For channels with NaN periodic PSD, results will be NaN.
+    total_periodic = np.nansum(
+        periodic_psds[:, (freqs >= freqs[0]) & (freqs <= freqs[-1])],
+        axis=1,
+    ) * (freqs[1] - freqs[0]) if len(freqs) > 1 else np.zeros(n_channels)
+
+    corrected = {}
+    for band_name, (fmin, fmax) in bands.items():
+        idx = np.where((freqs >= fmin) & (freqs <= fmax))[0]
+        if len(idx) == 0:
+            corrected[band_name] = {
+                "corrected_absolute": np.full(n_channels, np.nan),
+                "corrected_relative": np.full(n_channels, np.nan),
+            }
+            continue
+
+        abs_power = np.trapezoid(periodic_psds[:, idx], freqs[idx], axis=1)
+        total_power = np.trapezoid(periodic_psds, freqs, axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rel_power = np.where(total_power > 0, abs_power / total_power, np.nan)
+
+        corrected[band_name] = {
+            "corrected_absolute": abs_power,
+            "corrected_relative": rel_power,
+        }
+
+    return corrected
+
+
 def compute_asymmetry(
     band_power: dict, ch_names: list[str], pairs: list[list[str]]
 ) -> dict:
@@ -197,12 +300,19 @@ def analyze_spectral(raw, params: dict) -> dict:
     """Run full spectral analysis pipeline.
 
     Returns:
-        Dict with psds, freqs, band_power, ratios, aperiodic, asymmetry.
+        Dict with psds, freqs, band_power, corrected_band_power, ratios,
+        corrected_ratios, aperiodic, asymmetry.
     """
     psds, freqs = compute_psd(raw, params)
     band_power = compute_band_power(psds, freqs, params["bands"])
     ratios = compute_band_ratios(band_power, raw.ch_names)
     aperiodic = compute_aperiodic(psds, freqs, raw.ch_names, params["aperiodic"])
+    corrected_band_power = compute_corrected_band_power(
+        psds, freqs, aperiodic, raw.ch_names, params["bands"]
+    )
+    corrected_ratios = compute_band_ratios(
+        corrected_band_power, raw.ch_names, power_key="corrected_absolute"
+    )
     asymmetry = compute_asymmetry(
         band_power, raw.ch_names, params["asymmetry"]["homologous_pairs"]
     )
@@ -210,7 +320,9 @@ def analyze_spectral(raw, params: dict) -> dict:
         "psds": psds,
         "freqs": freqs,
         "band_power": band_power,
+        "corrected_band_power": corrected_band_power,
         "ratios": ratios,
+        "corrected_ratios": corrected_ratios,
         "aperiodic": aperiodic,
         "asymmetry": asymmetry,
     }
