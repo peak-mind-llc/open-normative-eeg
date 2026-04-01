@@ -72,41 +72,46 @@ class DortmundLoader(DatasetLoader):
         """
         participants = self._load_participants(data_dir)
 
-        # Find all .vhdr files in session 1
-        vhdr_files = sorted(
-            set(data_dir.glob("sub-*/ses-1/eeg/*.vhdr"))
+        # Find all EEG files in session 1 (.edf, .vhdr, or .set)
+        eeg_files = sorted(
+            set(data_dir.glob("sub-*/ses-1/eeg/*.edf"))
+            | set(data_dir.glob("sub-*/ses-1/eeg/*.vhdr"))
+            | set(data_dir.glob("sub-*/ses-1/eeg/*.set"))
+            | set(data_dir.glob("sub-*/eeg/*.edf"))
             | set(data_dir.glob("sub-*/eeg/*.vhdr"))
+            | set(data_dir.glob("sub-*/eeg/*.set"))
         )
 
-        if not vhdr_files:
+        if not eeg_files:
             logger.warning(
-                "No .vhdr files found in %s/sub-*/{ses-1/eeg,eeg}/", data_dir
+                "No EEG files (.edf/.vhdr/.set) found in %s/sub-*/{ses-1/eeg,eeg}/",
+                data_dir,
             )
             return
 
-        logger.info("Found %d .vhdr files in session 1", len(vhdr_files))
+        logger.info("Found %d EEG files in session 1", len(eeg_files))
 
-        for vhdr_path in vhdr_files:
+        for eeg_path in eeg_files:
             # Only process pre-task files
-            if not self._is_pre_task(vhdr_path):
+            if not self._is_pre_task(eeg_path):
                 continue
 
             # Extract subject ID
             subject_id = None
-            for part in vhdr_path.parts:
+            for part in eeg_path.parts:
                 if part.startswith("sub-"):
                     subject_id = part
                     break
             if subject_id is None:
-                logger.warning("Could not extract subject ID from %s", vhdr_path)
+                logger.warning("Could not extract subject ID from %s", eeg_path)
                 continue
 
             # Detect condition from filename
-            condition = self._detect_condition(vhdr_path.name)
+            condition = self._detect_condition(eeg_path.name)
             if condition is None:
                 logger.warning(
                     "Could not determine EO/EC condition from %s — skipping",
-                    vhdr_path.name,
+                    eeg_path.name,
                 )
                 continue
 
@@ -120,13 +125,11 @@ class DortmundLoader(DatasetLoader):
                     "No demographics for %s — age will be NaN", subject_id
                 )
 
-            # Load the recording
+            # Load the recording (support multiple formats)
             try:
-                raw = mne.io.read_raw_brainvision(
-                    str(vhdr_path), preload=True, verbose=False
-                )
+                raw = self._load_raw(eeg_path)
             except Exception:
-                logger.warning("Failed to load %s", vhdr_path, exc_info=True)
+                logger.warning("Failed to load %s", eeg_path, exc_info=True)
                 continue
 
             # Drop non-EEG channels, standardize to 19 channels
@@ -136,12 +139,12 @@ class DortmundLoader(DatasetLoader):
             except Exception:
                 logger.warning(
                     "Channel standardization failed for %s — skipping",
-                    vhdr_path,
+                    eeg_path,
                     exc_info=True,
                 )
                 continue
 
-            metadata = {"source_file": str(vhdr_path), **info}
+            metadata = {"source_file": str(eeg_path), **info}
 
             yield SubjectRecord(
                 subject_id=subject_id,
@@ -155,6 +158,19 @@ class DortmundLoader(DatasetLoader):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_raw(eeg_path: Path) -> mne.io.Raw:
+        """Load a raw EEG file, supporting .edf, .vhdr, and .set formats."""
+        suffix = eeg_path.suffix.lower()
+        if suffix == ".edf":
+            return mne.io.read_raw_edf(str(eeg_path), preload=True, verbose=False)
+        elif suffix == ".vhdr":
+            return mne.io.read_raw_brainvision(str(eeg_path), preload=True, verbose=False)
+        elif suffix == ".set":
+            return mne.io.read_raw_eeglab(str(eeg_path), preload=True, verbose=False)
+        else:
+            raise ValueError(f"Unsupported EEG format: {suffix}")
 
     @staticmethod
     def _load_participants(data_dir: Path) -> dict[str, dict]:
