@@ -137,8 +137,8 @@ def check_eo_ec_alpha(norms) -> dict:
         ec = cond_means.get("ec")
         if eo is None or ec is None:
             continue
-        # Skip near-zero values (specparam may zero out periodic power)
-        if eo < 1e-6 or ec < 1e-6:
+        # Skip cells where both are exactly zero
+        if eo == 0 and ec == 0:
             continue
         ratio = ec / eo if eo > 0 else None
         results.append({

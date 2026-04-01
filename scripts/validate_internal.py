@@ -194,9 +194,8 @@ def check_eo_ec_alpha(subjects: list[dict], age_bins: list[int]) -> dict:
         ec = cond_means.get("ec")
         if eo is None or ec is None:
             continue
-        # Skip cells where either value is near zero (specparam may have
-        # zeroed out periodic power, or the value is negligibly small)
-        if eo < 1e-6 or ec < 1e-6:
+        # Skip cells where both are exactly zero
+        if eo == 0 and ec == 0:
             continue
         correct = ec > eo
         ratio = ec / eo if eo > 0 else None
