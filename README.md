@@ -20,7 +20,9 @@ Every recording passes through:
 6. **ICA** — PICARD extended with ICLabel auto-classification
 7. **Re-referencing** — Average reference
 8. **Spectral analysis** — PSD (Welch), 11 frequency bands, aperiodic/1/f fitting (specparam), specparam-corrected band power, asymmetry
-9. **Connectivity** — dwPLI, coherence, imaginary coherence across 10 hub regions, graph metrics, theta-gamma PAC
+9. **GSF correction** — Global Scale Factor removes non-neural variance (skull thickness, amplifier gain)
+10. **IAF detection** — Individual Alpha Frequency via peak detection and center-of-gravity (Corcoran et al. 2018)
+11. **Connectivity** — dwPLI, coherence, imaginary coherence across 10 hub regions, graph metrics, theta-gamma PAC
 
 ## Specparam-Corrected Z-Scores
 
@@ -40,13 +42,32 @@ A subject could have abnormal z-scores simply because their aperiodic slope diff
 
 The corrected metrics use [specparam](https://specparam-tools.github.io/) (formerly FOOOF) to fit and subtract the aperiodic component in log-power space before computing band power. This isolates oscillatory peaks from the 1/f background, giving clinically more meaningful z-scores.
 
+## Statistical Transparency
+
+Most normative EEG databases are black boxes. This one shows its work.
+
+| Feature | What it does | Why it matters |
+|---------|-------------|----------------|
+| **FDR correction** | Benjamini-Hochberg across all tests | 19ch x 11 bands = 209 tests. At p=0.05, ~10 false positives expected. FDR tells you which findings are real. |
+| **SE(z)** | Standard error of each z-score | A z=2.3 from N=200 is precise. A z=2.3 from N=8 is not. SE quantifies this. |
+| **Prediction intervals** | Where a *new* healthy person would fall | CI tells you where the population mean is. PI tells you "is this value normal?" — the actual clinical question. |
+| **Cohen's d + severity labels** | Effect size with calibrated language | "Moderately atypical" is more useful than "z=1.7". Six tiers from "Within typical limits" to "Extremely atypical". |
+| **Global pattern detection** | Flags when 60%+ channels deviate same direction | 15 elevated channels is one global pattern (medication? arousal?), not 15 independent findings. |
+| **Spatial cluster detection** | BFS on channel adjacency graph | Finds localized clusters like "elevated Theta at T3-T5-O1 (left temporal-occipital)". |
+| **Metric disagreements** | Compares total vs periodic-only power | When they disagree, the deviation is in the 1/f slope, not oscillatory activity. Clinically different. |
+| **GSF correction** | Global Scale Factor removes non-neural variance | Skull thickness and amplifier gain account for ~42% of power variance. Critical for multi-dataset norms. |
+| **IAF detection** | Individual Alpha Frequency (peak + center-of-gravity) | Fixed 8-13 Hz boundaries mischaracterize anyone with alpha at 8 Hz. IAF flags when this is happening. |
+
 ## Supported Datasets
 
-| Dataset | Subjects | Ages | Channels | Status |
-|---------|----------|------|----------|--------|
-| LEMON | ~220 | 20–77 | 62 (BrainVision) | Implemented |
-| HBN | ~2500 | 5–21 | 128 (EGI) | Implemented |
-| MIPDB | ~126 | 6–44 | 128 (EGI) | Implemented |
+| Dataset | Subjects | Ages | Channels | Format | License | Status |
+|---------|----------|------|----------|--------|---------|--------|
+| LEMON | ~220 | 20–77 | 62 (BrainVision) | .vhdr | CC0 (public domain) | Implemented |
+| Dortmund | ~486 | 20–70 | 64 (BrainProducts) | .edf | CC BY 4.0 | Implemented |
+| HBN | ~2500 | 5–21 | 128 (EGI) | .mff | CC-BY-SA 4.0 | Loader implemented, not yet run |
+| MIPDB | ~126 | 6–44 | 128 (EGI) | .raw | CC-BY-NC-SA | Loader implemented, not yet run |
+
+Combined coverage: ages 5 through 77 with no gaps. ~3,300+ subjects from four independent datasets.
 
 ## Installation
 
@@ -69,12 +90,18 @@ python scripts/build_norms.py --help
 
   data_dir                  Path to dataset (BIDS-like layout)
   --output, -o              Output directory (default: ./norms_output)
-  --dataset, -d             Dataset: lemon, hbn, mipdb (default: lemon)
+  --dataset, -d             Dataset: lemon, dortmund, hbn, mipdb (default: lemon)
   --condition               eo, ec, or both (default: both)
   --max-subjects N          Limit to N subjects (0 = all)
   --skip-connectivity       Skip connectivity (faster, spectral-only norms)
   --age-bins 20 30 40 ...   Custom age bin edges (default: decade bins)
+  --qc-dir PATH             QC output directory — only process QC-passed subjects
+  --save-psd                Save aggregated PSD curves (norms_psd.npz)
+  --merge                   Merge mode: combine existing checkpoint dirs
+  --merge-dir PATH          (with --merge) checkpoint directory to include (repeatable)
 ```
+
+Line frequency (50/60 Hz) is auto-detected from the dataset loader — no manual flag needed.
 
 ### Output
 
@@ -300,6 +327,95 @@ python scripts/build_norms.py /path/to/mipdb -o ./mipdb_norms \
     --age-bins 6 12 18 25 35 45
 ```
 
+### Dortmund Vital Study (~486 subjects, ages 20-70, 64-channel BrainProducts EDF)
+
+**Reference:** Getzmann, S., Gajewski, P.D., Schneider, D. & Wascher, E. (2024). Resting-state EEG data before and after cognitive activity across the adult lifespan and a 5-year follow-up. *Scientific Data*, 11:988. [doi:10.1038/s41597-024-03814-8](https://doi.org/10.1038/s41597-024-03814-8)
+
+**License:** CC BY 4.0 (open, commercial OK, attribution required)
+
+#### 1. Download Dortmund data
+
+```bash
+# OpenNeuro CLI
+pip install openneuro-py
+openneuro download --dataset ds005385 ~/datasets/dortmund/
+
+# Or via AWS S3 (no credentials needed)
+aws s3 sync s3://openneuro.org/ds005385 ~/datasets/dortmund/ --no-sign-request
+```
+
+#### 2. QC sweep
+
+```bash
+python scripts/normative/dortmund_qc.py ~/datasets/dortmund/ -o ./dortmund_qc -w 4
+```
+
+**Important:** This is a European dataset. The loader automatically applies 50 Hz notch filtering (not 60 Hz). The QC script checks for 50 Hz line noise.
+
+The Dortmund study recorded EEG in four blocks: pre-task EO, pre-task EC, [2 hours cognitive tasks], post-task EO, post-task EC. Only **pre-task** data is used for normative purposes. Post-task data is contaminated by cognitive fatigue.
+
+#### 3. Build norms
+
+```bash
+python scripts/build_norms.py ~/datasets/dortmund/ \
+    -o ./dortmund_norms \
+    --dataset dortmund \
+    --qc-dir ./dortmund_qc \
+    --save-psd
+```
+
+---
+
+### Merging Multiple Datasets
+
+Combine normative data from multiple datasets into a single database. Each dataset is processed independently (preserving checkpoint/resume), then merged:
+
+```bash
+# Step 1: Process each dataset separately
+python scripts/build_norms.py ~/datasets/lemon/ -o ./norms_lemon --dataset lemon --qc-dir ./lemon_qc --save-psd
+python scripts/build_norms.py ~/datasets/dortmund/ -o ./norms_dortmund --dataset dortmund --qc-dir ./dortmund_qc --save-psd
+
+# Step 2: Merge
+python scripts/build_norms.py --merge \
+    --merge-dir ./norms_lemon/subjects \
+    --merge-dir ./norms_dortmund/subjects \
+    --output ./norms_combined
+```
+
+The merged database recomputes all normative statistics (mean, SD, percentiles, CI, PI) from the combined subject pool. GSF correction normalizes amplifier gain differences between datasets.
+
+---
+
+## Compare a Recording Against Norms
+
+Process a single clinical EEG file and compare it against the normative database:
+
+```bash
+# Quick comparison (spectral only, text summary)
+python scripts/compare_recording.py recording.edf norms_combined/norms.json \
+    --age 35 --condition eo --skip-connectivity
+
+# Full comparison with JSON report
+python scripts/compare_recording.py recording.edf norms_combined/norms.json \
+    --age 35 --condition eo --output report.json
+
+# European recording (50 Hz line noise)
+python scripts/compare_recording.py recording.edf norms.json \
+    --age 42 --condition ec --line-freq 50
+```
+
+Supports `.edf`, `.vhdr` (BrainVision), `.set` (EEGLAB), `.mff` (EGI). Any channel count is standardized to 19-channel 10-20 automatically.
+
+The text summary includes:
+- FDR-corrected significant findings with severity labels
+- Global pattern alerts (non-focal deviations)
+- Metric disagreements (aperiodic vs oscillatory)
+- Spatial clusters of adjacent deviant channels
+- SE(z) precision for each z-score
+- Prediction interval status (is the value within the normal range?)
+
+---
+
 ## Visualize Normative Database
 
 Generate an HTML report with topographic head maps, band power heatmaps, coverage tables, and distribution quality flags:
@@ -333,25 +449,40 @@ print(result.to_nested_dict())
 ### Compare a clinical recording against norms
 
 ```python
-from open_normative.compare import compare_to_norms
+from open_normative.compare import compare_and_report
 from open_normative.io import read_norms_json
 
 norms = read_norms_json("norms_output/norms.json")
-results = compare_to_norms(
+
+# Full comparison report with statistical transparency
+report = compare_and_report(
     metrics=clinical_result.to_nested_dict(),
     norms=norms,
     age=42,
     condition="eo",
 )
 
-for r in results:
-    if abs(r.z_score or 0) > 2.0:
-        print(f"{r.channel} {r.band} {r.metric}: z={r.z_score:.2f}")
+# Text summary with FDR counts, patterns, severity labels
+print(report.summary_text())
 
-# Compare corrected (specparam) z-scores vs uncorrected
-for r in results:
-    if r.metric == "corrected_absolute_power" and abs(r.z_score or 0) > 2.0:
-        print(f"[corrected] {r.channel} {r.band}: z={r.z_score:.2f}")
+# JSON for frontend consumption
+import json
+json.dump(report.to_dict(), open("report.json", "w"), indent=2)
+
+# Programmatic access
+for er in report.results:
+    if er.base.fdr_significant:
+        print(
+            f"{er.base.channel} {er.base.band} {er.base.metric}: "
+            f"z={er.base.z_score:+.2f} ± {er.se_z:.2f} (SE), "
+            f"{er.severity_label}, Cohen's d={er.cohen_d_label}"
+        )
+
+# Pattern-level insights
+for gp in report.global_patterns:
+    print(gp["interpretation"])
+for md in report.metric_disagreements:
+    print(md["interpretation"])
 ```
 
 ## Normative Output Format
@@ -359,9 +490,15 @@ for r in results:
 Each normative cell stores:
 - **Parametric stats**: mean, SD (and log-transformed mean/SD for power metrics)
 - **Non-parametric stats**: percentiles at 1, 5, 10, 25, 50, 75, 90, 95, 99
+- **Confidence interval**: 95% CI for the population mean
+- **Prediction interval**: 95% PI for where a new individual would fall
 - **Quality indicators**: sample size (n), Shapiro-Wilk normality p-value
 - **Age bins**: Decade bins by default, configurable
-- **Dual metrics**: Both uncorrected and specparam-corrected band power for each cell
+- **Dual metrics**: Both uncorrected and specparam-corrected band power
+- **GSF-corrected power**: Global Scale Factor normalized band power
+- **IAF**: Individual Alpha Frequency (peak and center-of-gravity) per channel and global
+- **Connectivity norms**: dwPLI, coherence, graph metrics, PAC
+- **Asymmetry norms**: Hemispheric laterality indices for homologous pairs
 
 ## Using with Coherence Workstation
 
