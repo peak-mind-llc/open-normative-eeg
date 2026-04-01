@@ -134,6 +134,14 @@ def mock_subject_metrics():
                         "corrected_relative_power": float(rng.beta(2, 8)),
                     },
                 },
+                "F3/F4": {
+                    "Alpha": {
+                        "asymmetry_index": float(rng.uniform(-0.3, 0.3)),
+                    },
+                    "Theta": {
+                        "asymmetry_index": float(rng.uniform(-0.3, 0.3)),
+                    },
+                },
             },
         })
     return subjects

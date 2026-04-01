@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
+from scipy.stats import norm as _norm_dist
 
 from open_normative.normative import NormCell, _LOG_TRANSFORM_METRICS
 
@@ -46,6 +47,11 @@ class ComparisonResult:
     norm_n: int
     bin: str
     low_confidence: bool
+    ci_lower: Optional[float] = None
+    ci_upper: Optional[float] = None
+    p_value: Optional[float] = None
+    fdr_significant: Optional[bool] = None
+    fdr_threshold: Optional[float] = None
 
 
 def _match_bin(age: int | float, bin_label: str) -> bool:
@@ -118,11 +124,57 @@ def _interpolate_percentile(value: float, percentiles: dict) -> Optional[float]:
     return None
 
 
+def apply_fdr_correction(
+    results: list[ComparisonResult],
+    alpha: float = 0.05,
+) -> list[ComparisonResult]:
+    """Apply Benjamini-Hochberg FDR correction to comparison results.
+
+    Computes two-tailed p-values from z-scores, applies the BH procedure,
+    and sets p_value, fdr_significant, and fdr_threshold on each result.
+
+    Args:
+        results: List of ComparisonResult with z_scores computed.
+        alpha: FDR significance level (default 0.05).
+
+    Returns:
+        The same list, modified in place, with FDR fields populated.
+    """
+    # Collect results with valid z-scores
+    valid = [(i, r) for i, r in enumerate(results) if r.z_score is not None]
+    if not valid:
+        return results
+
+    # Compute two-tailed p-values
+    for idx, r in valid:
+        r.p_value = float(2.0 * (1.0 - _norm_dist.cdf(abs(r.z_score))))
+
+    # Sort by p-value for BH procedure
+    p_sorted = sorted(valid, key=lambda x: x[1].p_value)
+    m = len(p_sorted)
+
+    # Find the largest k where p(k) <= alpha * k / m
+    max_k = -1
+    for k, (idx, r) in enumerate(p_sorted):
+        threshold = alpha * (k + 1) / m
+        r.fdr_threshold = float(threshold)
+        if r.p_value <= threshold:
+            max_k = k
+
+    # All tests up to max_k are significant
+    for k, (idx, r) in enumerate(p_sorted):
+        r.fdr_significant = k <= max_k if max_k >= 0 else False
+
+    return results
+
+
 def compare_to_norms(
     metrics: dict,
     norms: list[NormCell],
     age: int | float,
     condition: str,
+    apply_fdr: bool = True,
+    fdr_alpha: float = 0.05,
 ) -> list[ComparisonResult]:
     """Compare clinical metrics against a normative database.
 
@@ -204,7 +256,12 @@ def compare_to_norms(
                         norm_n=cell.n,
                         bin=cell.bin,
                         low_confidence=cell.n < 10,
+                        ci_lower=getattr(cell, "ci_lower", None),
+                        ci_upper=getattr(cell, "ci_upper", None),
                     )
                 )
+
+    if apply_fdr:
+        apply_fdr_correction(results, alpha=fdr_alpha)
 
     return results

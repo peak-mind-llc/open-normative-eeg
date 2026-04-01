@@ -161,3 +161,96 @@ def test_analyze_spectral_returns_all_metrics(synthetic_raw_19ch):
     assert "corrected_ratios" in result
     assert "aperiodic" in result
     assert "asymmetry" in result
+    assert "gsf" in result
+    assert "gsf_band_power" in result
+    assert "iaf" in result
+
+
+def test_compute_gsf(synthetic_raw_19ch):
+    from open_normative.spectral import compute_gsf, compute_psd
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    gsf, corrected = compute_gsf(psds, freqs)
+    assert isinstance(gsf, float)
+    assert corrected.shape == psds.shape
+    # After GSF correction, mean of log10(corrected) should be ~0
+    assert abs(np.mean(np.log10(np.maximum(corrected, 1e-30)))) < 1e-10
+
+
+def test_compute_gsf_band_power(synthetic_raw_19ch):
+    from open_normative.spectral import (
+        compute_gsf, compute_gsf_band_power, compute_psd
+    )
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    _, gsf_psds = compute_gsf(psds, freqs)
+    gsf_bp = compute_gsf_band_power(gsf_psds, freqs, params["bands"])
+    assert "Alpha" in gsf_bp
+    assert "gsf_absolute" in gsf_bp["Alpha"]
+    assert "gsf_relative" in gsf_bp["Alpha"]
+    assert len(gsf_bp["Alpha"]["gsf_absolute"]) == 19
+
+
+def test_compute_iaf(synthetic_raw_19ch):
+    from open_normative.spectral import (
+        compute_iaf, compute_psd, compute_aperiodic
+    )
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    # Use mock aperiodic with no peaks (specparam not installed)
+    aperiodic = {ch: {"peak_params": [], "fit_quality": "skipped"}
+                 for ch in synthetic_raw_19ch.ch_names}
+    iaf = compute_iaf(psds, freqs, list(synthetic_raw_19ch.ch_names),
+                      aperiodic, params.get("iaf", {}))
+    assert "per_channel" in iaf
+    assert "global_cog" in iaf
+    # CoG should be in alpha range since synthetic data has 10 Hz peak
+    assert 7 <= iaf["global_cog"] <= 14
+    # No peaks detected (no specparam), so global_peak should be None
+    assert iaf["global_peak"] is None
+
+
+def test_normative_includes_asymmetry(mock_subject_metrics):
+    from open_normative.normative import build_normative
+    norms = build_normative(mock_subject_metrics)
+    asym_cells = [c for c in norms if c.channel == "F3/F4"]
+    assert len(asym_cells) > 0
+    assert any(c.metric == "asymmetry_index" for c in asym_cells)
+
+
+def test_norm_cell_has_ci(mock_subject_metrics):
+    from open_normative.normative import build_normative
+    norms = build_normative(mock_subject_metrics)
+    cells_with_ci = [c for c in norms if c.ci_lower is not None]
+    assert len(cells_with_ci) > 0
+    for c in cells_with_ci:
+        assert c.ci_lower < c.mean
+        assert c.ci_upper > c.mean
+
+
+def test_fdr_correction():
+    from open_normative.compare import ComparisonResult, apply_fdr_correction
+    # Create results with a mix of significant and non-significant z-scores
+    results = []
+    for i in range(20):
+        z = 0.5  # not significant
+        results.append(ComparisonResult(
+            channel="Fz", band="Alpha", metric="absolute_power",
+            value=1.0, z_score=z, percentile_rank=50.0,
+            norm_mean=1.0, norm_sd=1.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        ))
+    # Add a few extreme values
+    for z in [3.5, -4.0, 3.0]:
+        results.append(ComparisonResult(
+            channel="Fz", band="Theta", metric="absolute_power",
+            value=1.0, z_score=z, percentile_rank=99.0,
+            norm_mean=1.0, norm_sd=1.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        ))
+    apply_fdr_correction(results)
+    sig = [r for r in results if r.fdr_significant]
+    non_sig = [r for r in results if r.fdr_significant is False]
+    # The 3 extreme z-scores should survive FDR
+    assert len(sig) == 3
+    assert len(non_sig) == 20

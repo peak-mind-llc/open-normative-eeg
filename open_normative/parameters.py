@@ -87,6 +87,14 @@ PIPELINE_PARAMS = {
             ],
             "threshold": 0.15,
         },
+        "gsf": {
+            "enabled": True,
+        },
+        "iaf": {
+            "search_range": [7, 14],
+            "posterior_channels": ["O1", "O2", "Pz", "P3", "P4"],
+            "typical_range": [9, 11],
+        },
     },
     "connectivity": {
         "epoch_length": 2.0,
