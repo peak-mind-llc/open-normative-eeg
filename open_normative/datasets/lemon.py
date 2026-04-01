@@ -47,10 +47,14 @@ _META_CSV_NAME = "META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv"
 class LEMONLoader(DatasetLoader):
     """Loader for the LEMON resting-state EEG dataset.
 
+    Recorded in Leipzig, Germany — line noise is 50 Hz.
+
     Supports two demographics file formats:
     - The META CSV shipped with the GWDG download (auto-detected)
     - A BIDS-style participants.tsv (e.g. from OpenNeuro ds000221)
     """
+
+    line_freq: float = 50.0
 
     def download(self, dest_dir: Path) -> None:
         raise NotImplementedError(_DOWNLOAD_INSTRUCTIONS)
