@@ -64,7 +64,7 @@ LINE_FREQ = 50.0  # European mains — CRITICAL
 # Non-EEG channel patterns (discovered channels matching these are excluded
 # from signal quality checks)
 NON_EEG_PATTERNS = {"VEOG", "HEOG", "ECG", "EMG", "EOG", "BIP", "AUX",
-                     "GSR", "RESP", "TEMP"}
+                     "GSR", "RESP", "TEMP", "STATUS", "TRIGGER", "STI"}
 
 # Duration thresholds per condition block (~3 min expected)
 MIN_DURATION_S = 120.0        # 2 min — fail below this
@@ -560,8 +560,9 @@ def check_basic_integrity(raw, data_uv) -> tuple[dict, list]:
     elif duration_sec > MAX_DURATION_S:
         issues.append(("warn", f"duration={duration_min:.1f} min, above {MAX_DURATION_S / 60:.0f} min expected max"))
 
-    # Data scale check
-    median_amp = float(np.median(np.abs(data_uv)))
+    # Data scale check — demean first (EDF recordings have large DC offsets)
+    data_demeaned = data_uv - np.mean(data_uv, axis=1, keepdims=True)
+    median_amp = float(np.median(np.abs(data_demeaned)))
     if median_amp > MEDIAN_AMP_WARN_UV:
         issues.append(("fail", f"median amplitude={median_amp:.1f} uV, exceeds {MEDIAN_AMP_WARN_UV}"))
 
@@ -605,17 +606,20 @@ def check_channels(raw, data_uv, channel_mapping: dict) -> tuple[dict, list]:
     eeg_names = [ch_names[i] for i in eeg_idx]
     eeg_data = data_uv[eeg_idx]
 
-    # Flat channels
+    # Demean — EDF recordings often have large DC offsets that are not artifacts
+    eeg_demeaned = eeg_data - np.mean(eeg_data, axis=1, keepdims=True)
+
+    # Flat channels (variance is DC-invariant, no demeaning needed)
     variances = np.var(eeg_data, axis=1)
     flat = [eeg_names[i] for i in range(len(eeg_names))
             if variances[i] < FLAT_VARIANCE_UV2]
     if flat:
         issues.append(("warn", f"flat channels (var<{FLAT_VARIANCE_UV2} uV^2): {', '.join(flat)}"))
 
-    # Railed channels
+    # Railed channels — check demeaned data
     railed = []
     for i, ch in enumerate(eeg_names):
-        frac = float(np.mean(np.abs(eeg_data[i]) > RAILED_AMPLITUDE_UV))
+        frac = float(np.mean(np.abs(eeg_demeaned[i]) > RAILED_AMPLITUDE_UV))
         if frac > RAILED_FRACTION:
             railed.append(ch)
     if railed:
@@ -686,20 +690,23 @@ def check_signal_quality(raw, data_uv) -> tuple[dict, list]:
     eeg_data = data_uv[eeg_idx]
     n_eeg = len(eeg_idx)
 
-    # Per-channel median absolute amplitude
-    per_ch_median = {ch: round(float(np.median(np.abs(eeg_data[j]))), 2)
-                     for j, ch in enumerate(eeg_names)}
-    overall_median = float(np.median(np.abs(eeg_data)))
+    # Demean — EDF recordings have large DC offsets that are not artifacts
+    eeg_demeaned = eeg_data - np.mean(eeg_data, axis=1, keepdims=True)
 
-    # Gross artifact detection — 1-second epochs
+    # Per-channel median absolute amplitude (demeaned)
+    per_ch_median = {ch: round(float(np.median(np.abs(eeg_demeaned[j]))), 2)
+                     for j, ch in enumerate(eeg_names)}
+    overall_median = float(np.median(np.abs(eeg_demeaned)))
+
+    # Gross artifact detection — 1-second epochs on demeaned data
     epoch_samples = int(ARTIFACT_EPOCH_SEC * sfreq)
-    n_epochs = eeg_data.shape[1] // epoch_samples
+    n_epochs = eeg_demeaned.shape[1] // epoch_samples
     n_artifact_epochs = 0
 
     for e in range(n_epochs):
         start = e * epoch_samples
         end = start + epoch_samples
-        epoch = eeg_data[:, start:end]
+        epoch = eeg_demeaned[:, start:end]
         ch_exceed = np.sum(np.max(np.abs(epoch), axis=1) > ARTIFACT_AMP_UV)
         if ch_exceed > ARTIFACT_CHAN_FRACTION * n_eeg:
             n_artifact_epochs += 1
@@ -1064,6 +1071,11 @@ def _run_checks_on_file(eeg_path: Path) -> dict:
         result["issues"] = [("fail", f"load error: {exc}")]
         return result
 
+    # Drop non-EEG channels (Status, triggers, etc.) before QC
+    non_eeg = [ch for ch in raw.ch_names if not _is_eeg_channel(ch)]
+    if non_eeg:
+        raw.drop_channels(non_eeg)
+
     data_uv = raw.get_data() * 1e6
     all_issues = []
 
@@ -1096,7 +1108,7 @@ def _run_checks_on_file(eeg_path: Path) -> dict:
 
     # 4. Condition markers
     try:
-        metrics, issues = check_condition_markers(raw, vhdr_path)
+        metrics, issues = check_condition_markers(raw, eeg_path)
         result["markers"] = metrics
         all_issues.extend(issues)
     except Exception as exc:
