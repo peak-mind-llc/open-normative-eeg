@@ -10,6 +10,12 @@ Usage:
     # Eyes-open only, skip connectivity (fast):
     python scripts/build_norms.py /path/to/lemon --output ./test_output \
         --condition eo --skip-connectivity --max-subjects 10
+
+    # Merge multiple datasets (no processing, just combine existing checkpoints):
+    python scripts/build_norms.py --merge \
+        --merge-dir ./lemon_norms/subjects \
+        --merge-dir ./dortmund_norms/subjects \
+        --output ./merged_norms
 """
 
 import argparse
@@ -254,7 +260,10 @@ def main():
     parser.add_argument(
         "data_dir",
         type=Path,
-        help="Path to the dataset directory (BIDS layout for LEMON)",
+        nargs="?",
+        default=None,
+        help="Path to the dataset directory (BIDS layout). "
+             "Not required when using --merge.",
     )
     parser.add_argument(
         "--output", "-o",
@@ -305,7 +314,153 @@ def main():
         help="Save aggregated normative PSD curves (mean/SD per channel "
              "per age bin) as norms_psd.npz for spectral overlay display.",
     )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="Merge mode: combine existing per-subject checkpoint dirs "
+             "into a single normative database. No processing is done.",
+    )
+    parser.add_argument(
+        "--merge-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help="Path to a subjects/ checkpoint directory to include in merge. "
+             "Can be specified multiple times. Use with --merge.",
+    )
     args = parser.parse_args()
+
+    # ── Merge mode ──────────────────────────────────────────────────────
+    if args.merge:
+        if not args.merge_dir:
+            parser.error("--merge requires at least one --merge-dir")
+
+        output_dir = args.output
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger = setup_logging(output_dir)
+
+        logger.info("Merge mode: combining checkpoint directories")
+
+        subjects_for_norms = []
+        source_counts = {}
+        for merge_path in args.merge_dir:
+            if not merge_path.exists():
+                logger.warning(f"Merge dir not found: {merge_path}")
+                continue
+            count = 0
+            for fpath in sorted(merge_path.glob("*.json")):
+                with open(fpath) as f:
+                    data = json.load(f)
+                # Tag the source directory for provenance
+                data["source_dir"] = str(merge_path)
+                subjects_for_norms.append(data)
+                count += 1
+            source_counts[str(merge_path)] = count
+            logger.info(f"  Loaded {count} subjects from {merge_path}")
+
+        if not subjects_for_norms:
+            logger.error("No subjects loaded from any merge directory. Exiting.")
+            sys.exit(1)
+
+        # Check for duplicate subjects (same person in both datasets)
+        seen_ids = {}
+        duplicates = []
+        for s in subjects_for_norms:
+            key = (s["subject_id"], s["condition"])
+            if key in seen_ids:
+                duplicates.append(key)
+            seen_ids[key] = s.get("source_dir", "unknown")
+        if duplicates:
+            logger.warning(
+                f"Found {len(duplicates)} duplicate subject+condition entries. "
+                f"First 5: {duplicates[:5]}. Keeping all — ensure datasets "
+                f"don't share subjects to avoid violating independence."
+            )
+
+        logger.info(
+            f"\nMerged {len(subjects_for_norms)} subject records "
+            f"from {len(source_counts)} sources"
+        )
+
+        # Age/sex summary
+        ages = [s["age"] for s in subjects_for_norms
+                if isinstance(s.get("age"), (int, float)) and s["age"] == s["age"]]
+        if ages:
+            logger.info(f"  Age range: {min(ages):.0f}-{max(ages):.0f}")
+        sexes = {}
+        for s in subjects_for_norms:
+            sex = s.get("sex", "?")
+            sexes[sex] = sexes.get(sex, 0) + 1
+        logger.info(f"  Sex distribution: {sexes}")
+        conds = {}
+        for s in subjects_for_norms:
+            c = s.get("condition", "?")
+            conds[c] = conds.get(c, 0) + 1
+        logger.info(f"  Conditions: {conds}")
+
+        # Build norms
+        conditions = None
+        if args.condition != "both":
+            conditions = [args.condition]
+
+        norms = build_normative(
+            subjects_for_norms,
+            age_bins=args.age_bins,
+            conditions=conditions,
+        )
+
+        # Write outputs
+        norms_json_path = output_dir / "norms.json"
+        norms_csv_path = output_dir / "norms.csv"
+        subjects_csv_path = output_dir / "subjects.csv"
+
+        write_norms_json(norms, norms_json_path)
+        write_norms_csv(norms, norms_csv_path)
+        write_subjects_csv(subjects_for_norms, subjects_csv_path)
+
+        # Save merge provenance
+        merge_config = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "mode": "merge",
+            "source_directories": {str(p): source_counts.get(str(p), 0)
+                                   for p in args.merge_dir},
+            "total_subjects": len(subjects_for_norms),
+            "duplicates_found": len(duplicates),
+            "age_bins": args.age_bins,
+            "condition_filter": args.condition,
+            "pipeline_params": PIPELINE_PARAMS,
+        }
+        with open(output_dir / "merge_config.json", "w") as f:
+            json.dump(merge_config, f, indent=2, default=str)
+
+        logger.info(f"\nWrote {len(norms)} normative cells to:")
+        logger.info(f"  {norms_json_path}")
+        logger.info(f"  {norms_csv_path}")
+        logger.info(f"  {subjects_csv_path}")
+        logger.info(f"  {output_dir / 'merge_config.json'}")
+
+        # Summary stats
+        bins_seen = sorted({c.bin for c in norms})
+        conditions_seen = sorted({c.condition for c in norms})
+        channels_seen = sorted({c.channel for c in norms})
+        metrics_seen = sorted({c.metric for c in norms})
+
+        logger.info(f"\nNormative summary:")
+        logger.info(f"  Age bins: {bins_seen}")
+        logger.info(f"  Conditions: {conditions_seen}")
+        logger.info(f"  Channels: {len(channels_seen)}")
+        logger.info(f"  Metrics: {metrics_seen}")
+        logger.info(f"  Min n per cell: {min(c.n for c in norms)}")
+        logger.info(f"  Max n per cell: {max(c.n for c in norms)}")
+
+        for src, cnt in source_counts.items():
+            logger.info(f"  {src}: {cnt} subjects")
+
+        return
+
+    # ── Normal (single-dataset) mode ────────────────────────────────────
+    if args.data_dir is None:
+        parser.error("data_dir is required when not using --merge")
 
     # Setup output directory
     output_dir = args.output
