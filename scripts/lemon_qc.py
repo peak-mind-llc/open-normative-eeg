@@ -33,6 +33,19 @@ from pathlib import Path
 import mne
 import numpy as np
 
+
+class _NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+
+    def default(self, obj):
+        if isinstance(obj, (np.bool_, np.integer)):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
 from open_normative.datasets.lemon import _fix_vhdr_refs, _EO_MARKER, _EC_MARKER
 
 logger = logging.getLogger("lemon_qc")
@@ -498,7 +511,7 @@ def main():
             logger.info("[%d/%d] %s (%.1f subj/min)", i + 1, len(todo), sid, rate * 60)
             result = qc_one_subject(sid, vhdr)
             # Save checkpoint
-            (subjects_dir / f"{sid}.json").write_text(json.dumps(result, indent=2))
+            (subjects_dir / f"{sid}.json").write_text(json.dumps(result, indent=2, cls=_NumpyEncoder))
             new_results.append(result)
             logger.info("  → %s%s", result["verdict"],
                          f" ({', '.join(result['reasons'])})" if result["reasons"] else "")
@@ -519,7 +532,7 @@ def main():
                         "integrity": {}, "channels": {}, "signal_quality": {}, "markers": {},
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
-                (subjects_dir / f"{sid}.json").write_text(json.dumps(result, indent=2))
+                (subjects_dir / f"{sid}.json").write_text(json.dumps(result, indent=2, cls=_NumpyEncoder))
                 new_results.append(result)
                 logger.info("[%d/%d] %s → %s", i + 1, len(todo), sid, result["verdict"])
 
