@@ -484,6 +484,22 @@ def main():
     LoaderClass = DATASETS[args.dataset]
     loader = LoaderClass()
 
+    # Apply dataset-specific line frequency (e.g. 50 Hz for European datasets)
+    if hasattr(loader, "line_freq") and loader.line_freq != PIPELINE_PARAMS["preprocessing"]["filter"]["notch_freq"]:
+        logger.info(
+            f"Dataset line frequency: {loader.line_freq} Hz "
+            f"(overriding default {PIPELINE_PARAMS['preprocessing']['filter']['notch_freq']} Hz)"
+        )
+        import copy
+        params_override = copy.deepcopy(PIPELINE_PARAMS)
+        params_override["preprocessing"]["filter"]["notch_freq"] = loader.line_freq
+        # Update harmonics for the new line frequency
+        params_override["preprocessing"]["filter"]["notch_harmonics"] = [
+            loader.line_freq * h for h in (2, 3)
+        ]
+    else:
+        params_override = None
+
     # Load QC allow-list if provided
     qc_allow = None
     if args.qc_dir:
@@ -551,6 +567,7 @@ def main():
             result = process_resting(
                 record.raw,
                 condition=record.condition,
+                params=params_override,
                 skip_connectivity=args.skip_connectivity,
             )
 

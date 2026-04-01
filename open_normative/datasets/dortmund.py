@@ -57,6 +57,8 @@ class DortmundLoader(DatasetLoader):
     European dataset: line noise is 50 Hz.
     """
 
+    line_freq: float = 50.0
+
     def download(self, dest_dir: Path) -> None:
         raise NotImplementedError(_DOWNLOAD_INSTRUCTIONS)
 
