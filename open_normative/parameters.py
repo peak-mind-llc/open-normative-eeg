@@ -5,6 +5,10 @@ and processing code. They define the exact processing pipeline used for both
 normative database construction and clinical EEG analysis.
 
 CW imports this dict to guarantee identical processing.
+
+REPORT_PARAMS configures the clinical comparison report — severity labels,
+effect size thresholds, pattern detection, and spatial adjacency for the
+19-channel 10-20 montage.
 """
 
 PIPELINE_PARAMS = {
@@ -160,4 +164,59 @@ PIPELINE_PARAMS = {
             "FPZ": "Fpz",
         },
     },
+}
+
+
+REPORT_PARAMS = {
+    "severity": {
+        "thresholds": [0.5, 1.0, 1.5, 2.0, 3.0],
+        "labels": [
+            "Within typical limits",
+            "Mildly atypical",
+            "Moderately atypical",
+            "Notably atypical",
+            "Markedly atypical",
+            "Extremely atypical",
+        ],
+    },
+    "cohen_d": {
+        "negligible": 0.2,
+        "small": 0.2,
+        "medium": 0.5,
+        "large": 0.8,
+    },
+    "global_pattern": {
+        "channel_fraction_threshold": 0.6,
+        "z_threshold": 1.5,
+    },
+    "cluster": {
+        "z_threshold": 1.5,
+    },
+    "disagreement": {
+        "z_threshold": 1.5,
+    },
+    "adjacency_19": {
+        "Fp1": ["Fp2", "F3", "F7"],
+        "Fp2": ["Fp1", "F4", "F8"],
+        "F7":  ["Fp1", "F3", "T3"],
+        "F3":  ["Fp1", "F7", "Fz", "C3"],
+        "Fz":  ["F3", "F4", "Cz"],
+        "F4":  ["Fp2", "Fz", "F8", "C4"],
+        "F8":  ["Fp2", "F4", "T4"],
+        "T3":  ["F7", "C3", "T5"],
+        "C3":  ["F3", "T3", "Cz", "P3"],
+        "Cz":  ["Fz", "C3", "C4", "Pz"],
+        "C4":  ["F4", "Cz", "T4", "P4"],
+        "T4":  ["F8", "C4", "T6"],
+        "T5":  ["T3", "P3", "O1"],
+        "P3":  ["C3", "T5", "Pz", "O1"],
+        "Pz":  ["Cz", "P3", "P4"],
+        "P4":  ["C4", "Pz", "T6", "O2"],
+        "T6":  ["T4", "P4", "O2"],
+        "O1":  ["T5", "P3", "O2"],
+        "O2":  ["T6", "P4", "O1"],
+    },
+    "fdr_alpha": 0.05,
+    "low_confidence_n": 10,
+    "prediction_interval_confidence": 0.95,
 }
