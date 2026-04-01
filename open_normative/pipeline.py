@@ -7,6 +7,7 @@ and MetricsResult for structured access to the outputs.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -163,6 +164,28 @@ class MetricsResult:
                 result[ch][corrected_key]["value"] = (
                     float(val) if val == val else None
                 )
+
+        # Aperiodic parameters: offset and exponent per channel.
+        # Stored under band="broadband" (not band-specific).
+        # Only include channels with good aperiodic fit (r_squared >= 0.85).
+        aperiodic = self.spectral.get("aperiodic", {})
+        for ch, ap in aperiodic.items():
+            r_sq = ap.get("r_squared", 0.0)
+            fit_quality = ap.get("fit_quality", "skipped")
+            if fit_quality != "good" or r_sq < 0.85:
+                continue
+            offset = ap.get("offset")
+            exponent = ap.get("exponent")
+            if offset is None or exponent is None:
+                continue
+            if math.isnan(offset) or math.isnan(exponent):
+                continue
+            if ch not in result:
+                result[ch] = {}
+            if "broadband" not in result[ch]:
+                result[ch]["broadband"] = {}
+            result[ch]["broadband"]["aperiodic_offset"] = float(offset)
+            result[ch]["broadband"]["aperiodic_exponent"] = float(exponent)
 
         # Connectivity: dwPLI node strength per electrode per band
         if self.connectivity is not None:
