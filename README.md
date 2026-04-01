@@ -416,6 +416,54 @@ The text summary includes:
 
 ---
 
+## Validate the Database
+
+Three validation scripts check that the norms are trustworthy, plus a report generator that combines them into a single document.
+
+### 1. Internal consistency
+
+Split-half reliability, EO vs EC alpha (Berger effect), IAF age trend, cell quality:
+
+```bash
+python scripts/validate_internal.py ./norms_output/subjects \
+    --output internal_validation.json
+```
+
+### 2. Literature reference checks
+
+8 checks against well-established EEG findings (alpha posterior dominance, aperiodic exponent range, relative power sums to 1, etc.):
+
+```bash
+python scripts/validate_literature.py ./norms_output/subjects \
+    --output literature_validation.json
+```
+
+### 3. Cross-dataset agreement
+
+Compare two independently-processed datasets in overlapping age ranges:
+
+```bash
+python scripts/validate_cross_dataset.py \
+    --dir-a ./norms_lemon/subjects --label-a LEMON \
+    --dir-b ./norms_dortmund/subjects --label-b Dortmund \
+    --output cross_dataset.json
+```
+
+### 4. Generate validation report
+
+Combine all validation results into a single human-readable markdown report:
+
+```bash
+python scripts/generate_validation_report.py \
+    --internal internal_validation.json \
+    --literature literature_validation.json \
+    --cross-dataset cross_dataset.json \
+    --label "LEMON + Dortmund Combined" \
+    --output validation_report.md
+```
+
+---
+
 ## Visualize Normative Database
 
 Generate an HTML report with topographic head maps, band power heatmaps, coverage tables, and distribution quality flags:
