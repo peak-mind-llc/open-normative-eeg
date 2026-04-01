@@ -32,6 +32,17 @@ from pathlib import Path
 import numpy as np
 from scipy import stats as scipy_stats
 
+
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (np.bool_, np.integer)):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from open_normative.normative import build_normative, _DEFAULT_AGE_BINS
@@ -563,7 +574,7 @@ def main():
 
     if args.output:
         with open(args.output, "w") as f:
-            json.dump(report, f, indent=2, default=str)
+            json.dump(report, f, indent=2, cls=_NumpyEncoder)
         logger.info("\nFull report written to %s", args.output)
 
 
