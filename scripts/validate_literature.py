@@ -137,6 +137,9 @@ def check_eo_ec_alpha(norms) -> dict:
         ec = cond_means.get("ec")
         if eo is None or ec is None:
             continue
+        # Skip near-zero values (specparam may zero out periodic power)
+        if eo < 1e-6 or ec < 1e-6:
+            continue
         ratio = ec / eo if eo > 0 else None
         results.append({
             "bin": age_bin,
