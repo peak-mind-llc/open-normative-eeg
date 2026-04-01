@@ -94,11 +94,14 @@ class LEMONLoader(DatasetLoader):
         logger.info("Found %d .vhdr files", len(vhdr_files))
 
         for vhdr_path in vhdr_files:
-            # Extract subject ID from path — handle both sub-*/eeg/ and sub-*/ses-*/eeg/
+            # Extract subject ID from the directory path (not the filename).
+            # The filename itself may start with "sub-" (e.g. sub-032301.vhdr)
+            # which would incorrectly match as a subject ID.
             subject_id = None
-            for part in vhdr_path.parts:
+            for part in vhdr_path.parent.parts:
                 if part.startswith("sub-"):
                     subject_id = part
+                    break
             if subject_id is None:
                 logger.warning("Could not extract subject ID from %s", vhdr_path)
                 continue
