@@ -503,12 +503,15 @@ def main():
     # Load QC allow-list if provided
     qc_allow = None
     if args.qc_dir:
+        # Support both naming conventions from QC scripts
         ready_path = args.qc_dir / "ready.txt"
+        if not ready_path.exists():
+            ready_path = args.qc_dir / "ready_subjects.txt"
         if ready_path.exists():
             qc_allow = set(ready_path.read_text().strip().splitlines())
             logger.info(f"QC filter: {len(qc_allow)} subjects in {ready_path}")
         else:
-            logger.warning(f"QC dir provided but {ready_path} not found — processing all subjects")
+            logger.warning(f"QC dir provided but no ready.txt or ready_subjects.txt found — processing all subjects")
 
     # Count and filter subjects
     logger.info(f"Scanning {args.data_dir} for {args.dataset} subjects...")
