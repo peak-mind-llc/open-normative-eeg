@@ -146,6 +146,19 @@ def split_half_reliability(
                 "flag": "LOW" if float(np.mean(m_rs)) < 0.80 else "ok",
             }
 
+    # Also compute split-half on core spectral metrics only
+    # (excluding noisy connectivity/graph/PAC/asymmetry metrics)
+    core_metrics = {
+        "relative_power", "corrected_absolute_power", "corrected_relative_power",
+        "gsf_absolute_power", "gsf_relative_power",
+        "aperiodic_exponent", "aperiodic_offset",
+    }
+    core_rs = []
+    for s in split_results:
+        core_r_vals = [v for m, v in s["per_metric"].items() if m in core_metrics and v is not None]
+        if core_r_vals:
+            core_rs.append(float(np.mean(core_r_vals)))
+
     return {
         "n_splits": len(split_results),
         "mean_r": round(float(np.mean(rs)), 4),
@@ -153,6 +166,8 @@ def split_half_reliability(
         "max_r": round(float(np.max(rs)), 4),
         "all_above_095": all(r >= 0.95 for r in rs),
         "all_above_090": all(r >= 0.90 for r in rs),
+        "core_spectral_mean_r": round(float(np.mean(core_rs)), 4) if core_rs else None,
+        "core_spectral_all_above_090": all(r >= 0.90 for r in core_rs) if core_rs else None,
         "per_metric": metric_summary,
         "splits": split_results,
     }
@@ -178,6 +193,9 @@ def check_eo_ec_alpha(subjects: list[dict], age_bins: list[int]) -> dict:
         eo = cond_means.get("eo")
         ec = cond_means.get("ec")
         if eo is None or ec is None:
+            continue
+        # Skip cells where both are effectively zero (specparam zeroed out)
+        if eo < 1e-10 and ec < 1e-10:
             continue
         correct = ec > eo
         ratio = ec / eo if eo > 0 else None
@@ -368,6 +386,9 @@ def main():
         logger.info("  Max r:  %.4f", split_half["max_r"])
         logger.info("  All splits r > 0.95: %s", split_half["all_above_095"])
         logger.info("  All splits r > 0.90: %s", split_half["all_above_090"])
+        if split_half.get("core_spectral_mean_r") is not None:
+            logger.info("  Core spectral metrics mean r: %.4f", split_half["core_spectral_mean_r"])
+            logger.info("  Core spectral all r > 0.90: %s", split_half["core_spectral_all_above_090"])
         # Flag weak metrics
         weak = {m: v for m, v in split_half["per_metric"].items() if v["flag"] == "LOW"}
         if weak:
@@ -410,8 +431,9 @@ def main():
     # Summary
     logger.info("\n=== SUMMARY ===")
     checks = {
-        "Split-half r > 0.90": split_half.get("all_above_090", False),
-        "EC > EO alpha (all cells)": eo_ec.get("pass", False),
+        "Split-half r > 0.90 (all metrics)": split_half.get("all_above_090", False),
+        "Split-half r > 0.90 (core spectral)": split_half.get("core_spectral_all_above_090", False),
+        "EC > EO alpha (non-zero cells)": eo_ec.get("pass", False),
         "IAF declines with age": iaf_trend.get("pass"),
     }
     all_pass = True
