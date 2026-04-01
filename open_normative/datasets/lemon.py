@@ -377,8 +377,9 @@ def _fix_vhdr_refs(vhdr_path: Path) -> Path:
 
 
 # LEMON stimulus markers for resting-state conditions
-_EO_MARKER = "Stimulus/S210"
-_EC_MARKER = "Stimulus/S200"
+# Per Babayan et al. (2019): S200 = eyes open, S210 = eyes closed
+_EO_MARKER = "Stimulus/S200"
+_EC_MARKER = "Stimulus/S210"
 
 
 def _split_by_markers(raw: mne.io.BaseRaw) -> dict[str, mne.io.BaseRaw]:
