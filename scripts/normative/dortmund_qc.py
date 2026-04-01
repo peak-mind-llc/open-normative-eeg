@@ -241,32 +241,42 @@ def _parse_bids_entities(filepath: Path) -> dict[str, str]:
     return entities
 
 
-def discover_tasks(data_dir: Path) -> dict[str, dict]:
-    """Scan all EEG .vhdr files to discover unique BIDS task and run labels.
+def _find_eeg_files(data_dir: Path) -> list[Path]:
+    """Find all EEG data files (.edf, .vhdr, .set) in a BIDS tree."""
+    files = []
+    for ext in ("*.edf", "*.vhdr", "*.set"):
+        files.extend(data_dir.glob(f"sub-*/ses-*/eeg/{ext}"))
+        files.extend(data_dir.glob(f"sub-*/eeg/{ext}"))
+    return sorted(set(files))
 
-    Returns {task_name: {"count": int, "runs": sorted list of run labels}}.
+
+def discover_tasks(data_dir: Path) -> dict[str, dict]:
+    """Scan all EEG files to discover unique BIDS task, acq, and run labels.
+
+    Returns {task_name: {"count": int, "runs": [...], "acqs": [...]}}.
     Called once at startup for reporting.
     """
-    vhdr_files = (
-        list(data_dir.glob("sub-*/ses-*/eeg/*.vhdr"))
-        + list(data_dir.glob("sub-*/eeg/*.vhdr"))
-    )
+    eeg_files = _find_eeg_files(data_dir)
 
     task_info: dict[str, dict] = {}
-    for f in vhdr_files:
+    for f in eeg_files:
         entities = _parse_bids_entities(f)
         task = entities.get("task", "unknown")
         run = entities.get("run", "")
+        acq = entities.get("acq", "")
 
         if task not in task_info:
-            task_info[task] = {"count": 0, "runs": set()}
+            task_info[task] = {"count": 0, "runs": set(), "acqs": set()}
         task_info[task]["count"] += 1
         if run:
             task_info[task]["runs"].add(run)
+        if acq:
+            task_info[task]["acqs"].add(acq)
 
     # Convert sets to sorted lists
     for info in task_info.values():
         info["runs"] = sorted(info["runs"])
+        info["acqs"] = sorted(info["acqs"])
 
     return task_info
 
@@ -289,12 +299,10 @@ def _classify_condition(task: str) -> str | None:
 def classify_resting_files(eeg_files: list[Path]) -> dict:
     """Classify EEG files into pre-task and post-task, EO and EC.
 
-    Strategy (adaptive, tries multiple conventions):
-    1. Parse BIDS filename: sub-XX_ses-YY_task-ZZZ_run-NN_eeg.vhdr
-    2. If task name contains 'EO'/'EC', classify condition.
-    3. If run-01 and run-02 exist for same condition, run-01=pre, run-02=post.
-    4. If 'pre'/'post' appears in task name, use that.
-    5. Fall back to file ordering if only one file per condition exists.
+    Supports multiple BIDS conventions:
+    - task-EyesOpen/task-EyesClosed with acq-pre/acq-post (Dortmund)
+    - task-restEO/task-restEC with run-01/run-02
+    - 'pre'/'post' in task name
 
     Returns dict with pre_eo, pre_ec, post_eo, post_ec paths (or None),
     plus classification_method and unclassified file list.
@@ -315,39 +323,60 @@ def classify_resting_files(eeg_files: list[Path]) -> dict:
     for f in eeg_files:
         entities = _parse_bids_entities(f)
         condition = _classify_condition(entities.get("task", ""))
-        parsed.append({"path": f, "entities": entities, "condition": condition})
+        acq = entities.get("acq", "").lower()
+        run = entities.get("run", "")
+        task = entities.get("task", "").lower()
+
+        # Determine pre/post timing from acq, task name, or run
+        timing = None
+        if acq in ("pre", "pretask"):
+            timing = "pre"
+        elif acq in ("post", "posttask"):
+            timing = "post"
+        elif "pre" in task:
+            timing = "pre"
+        elif "post" in task:
+            timing = "post"
+
+        parsed.append({
+            "path": f, "entities": entities,
+            "condition": condition, "timing": timing, "run": run,
+        })
 
     # Group by condition
     eo_files = [p for p in parsed if p["condition"] == "eo"]
     ec_files = [p for p in parsed if p["condition"] == "ec"]
     rest_files = [p for p in parsed if p["condition"] is None]
 
-    # If no EO/EC classification from task names, check if single 'rest' task
-    # has events that split into EO/EC — mark as unclassified for now
+    # If no EO/EC classification from task names, mark as unclassified
     if not eo_files and not ec_files and rest_files:
         result["unclassified"] = [str(p["path"]) for p in rest_files]
         result["classification_method"] = "unresolved_rest_task"
         return result
 
     def _assign_pre_post(files: list[dict], condition: str):
-        """Assign pre/post from run numbers or task-name hints."""
+        """Assign pre/post from acq entity, task name, or run numbers."""
         if len(files) == 0:
             return
 
-        # Sort by run number (ascending)
-        files_sorted = sorted(files, key=lambda p: p["entities"].get("run", "00"))
+        # Strategy 1: acq-pre / acq-post (Dortmund convention)
+        pre_acq = [f for f in files if f["timing"] == "pre"]
+        post_acq = [f for f in files if f["timing"] == "post"]
 
-        # Check for 'pre'/'post' in task name
-        pre_hint = [f for f in files if "pre" in f["entities"].get("task", "").lower()]
-        post_hint = [f for f in files if "post" in f["entities"].get("task", "").lower()]
+        if pre_acq:
+            result[f"pre_{condition}"] = pre_acq[0]["path"]
+            if result["classification_method"] == "none":
+                result["classification_method"] = "acq_entity"
+        if post_acq:
+            result[f"post_{condition}"] = post_acq[0]["path"]
+            if result["classification_method"] == "none":
+                result["classification_method"] = "acq_entity"
 
-        if pre_hint and post_hint:
-            result[f"pre_{condition}"] = pre_hint[0]["path"]
-            result[f"post_{condition}"] = post_hint[0]["path"]
-            result["classification_method"] = "task_name_pre_post"
+        if pre_acq or post_acq:
             return
 
-        # Use run numbers: run-01 = pre, run-02 = post
+        # Strategy 2: run numbers (run-01 = pre, run-02 = post)
+        files_sorted = sorted(files, key=lambda p: p["run"] or "00")
         if len(files_sorted) >= 2:
             result[f"pre_{condition}"] = files_sorted[0]["path"]
             result[f"post_{condition}"] = files_sorted[1]["path"]
@@ -355,7 +384,7 @@ def classify_resting_files(eeg_files: list[Path]) -> dict:
                 result["classification_method"] = "run_number"
             return
 
-        # Single file — assume pre-task
+        # Strategy 3: single file — assume pre-task
         if len(files_sorted) == 1:
             result[f"pre_{condition}"] = files_sorted[0]["path"]
             if result["classification_method"] == "none":
@@ -412,8 +441,12 @@ def discover_subjects(data_dir: Path) -> list[dict]:
                 eeg_dir = ses_dir / "eeg"
                 if not eeg_dir.exists():
                     continue
-                vhdr_files = sorted(eeg_dir.glob("*.vhdr"))
-                classified = classify_resting_files(vhdr_files)
+                eeg_data_files = sorted(
+                    list(eeg_dir.glob("*.edf"))
+                    + list(eeg_dir.glob("*.vhdr"))
+                    + list(eeg_dir.glob("*.set"))
+                )
+                classified = classify_resting_files(eeg_data_files)
 
                 # First session found -> ses1, second -> ses2
                 if info["ses1_files"] is None:
@@ -425,8 +458,12 @@ def discover_subjects(data_dir: Path) -> list[dict]:
             # Sessionless BIDS layout
             eeg_dir = sub_dir / "eeg"
             if eeg_dir.exists():
-                vhdr_files = sorted(eeg_dir.glob("*.vhdr"))
-                info["ses1_files"] = classify_resting_files(vhdr_files)
+                eeg_data_files = sorted(
+                    list(eeg_dir.glob("*.edf"))
+                    + list(eeg_dir.glob("*.vhdr"))
+                    + list(eeg_dir.glob("*.set"))
+                )
+                info["ses1_files"] = classify_resting_files(eeg_data_files)
                 info["sessions"].append("")
 
         subjects.append(info)
@@ -465,6 +502,26 @@ def load_all_results(subjects_dir: Path) -> list[dict]:
         with open(fpath) as f:
             results.append(json.load(f))
     return results
+
+
+# ---------------------------------------------------------------------------
+# EEG file loading
+# ---------------------------------------------------------------------------
+
+_EEG_LOADERS = {
+    ".vhdr": mne.io.read_raw_brainvision,
+    ".edf": mne.io.read_raw_edf,
+    ".set": mne.io.read_raw_eeglab,
+}
+
+
+def _load_eeg(filepath: Path):
+    """Load an EEG file by extension. Returns mne.io.Raw."""
+    ext = filepath.suffix.lower()
+    loader = _EEG_LOADERS.get(ext)
+    if loader is None:
+        raise ValueError(f"Unsupported EEG format: {ext}")
+    return loader(str(filepath), preload=True, verbose=False)
 
 
 # ---------------------------------------------------------------------------
@@ -689,7 +746,8 @@ def _parse_events_tsv(eeg_path: Path) -> list[dict]:
     """
     eeg_path = Path(eeg_path)
     stem = eeg_path.name
-    for suffix in ("_eeg.vhdr", "_eeg.eeg", "_eeg.vmrk", ".vhdr"):
+    for suffix in ("_eeg.edf", "_eeg.vhdr", "_eeg.eeg", "_eeg.vmrk",
+                    "_eeg.set", ".edf", ".vhdr", ".set"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
             break
@@ -836,8 +894,8 @@ def compare_pre_post(pre_path: Path, post_path: Path) -> dict | None:
     or None if either file cannot be loaded.
     """
     try:
-        pre_raw = mne.io.read_raw_brainvision(str(pre_path), preload=True, verbose=False)
-        post_raw = mne.io.read_raw_brainvision(str(post_path), preload=True, verbose=False)
+        pre_raw = _load_eeg(pre_path)
+        post_raw = _load_eeg(post_path)
     except Exception as e:
         logger.warning("Pre/post comparison load error: %s", e)
         return None
@@ -985,13 +1043,14 @@ def compute_normative_eligibility(result: dict, participants: dict) -> bool:
 # Per-subject QC worker
 # ---------------------------------------------------------------------------
 
-def _run_checks_on_file(vhdr_path: Path) -> dict:
-    """Load a single BrainVision file and run all signal-level checks.
+def _run_checks_on_file(eeg_path: Path) -> dict:
+    """Load a single EEG file and run all signal-level checks.
 
+    Supports .edf (Dortmund), .vhdr (BrainVision), .set (EEGLAB).
     Returns dict with integrity, channels, signal_quality, markers sections.
     """
     result = {
-        "source_file": str(vhdr_path),
+        "source_file": str(eeg_path),
         "integrity": {},
         "channels": {},
         "signal_quality": {},
@@ -1000,7 +1059,7 @@ def _run_checks_on_file(vhdr_path: Path) -> dict:
     }
 
     try:
-        raw = mne.io.read_raw_brainvision(str(vhdr_path), preload=True, verbose=False)
+        raw = _load_eeg(eeg_path)
     except Exception as exc:
         result["issues"] = [("fail", f"load error: {exc}")]
         return result
@@ -1237,7 +1296,8 @@ def write_outputs(output_dir: Path, results: list[dict],
     lines += ["## BIDS Task Discovery\n"]
     for task, info in sorted(task_discovery.items()):
         runs = ", ".join(info["runs"]) if info["runs"] else "none"
-        lines.append(f"- **{task}**: {info['count']} files (runs: {runs})")
+        acqs = ", ".join(info.get("acqs", [])) if info.get("acqs") else "none"
+        lines.append(f"- **{task}**: {info['count']} files (runs: {runs}, acqs: {acqs})")
     lines.append("")
 
     # Session inventory
