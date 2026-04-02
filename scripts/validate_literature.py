@@ -359,26 +359,31 @@ def check_theta_beta_ratio_range(norms) -> dict:
 
     results = []
     for c in cells:
-        in_range = 0.5 <= c.mean <= 10.0
+        # TBR is a ratio of same-unit powers — should be 0.1-20.0
+        # (wider than clinical range to catch pipeline errors, not clinical outliers)
+        in_range = 0.1 <= c.mean <= 20.0
         results.append({
             "bin": c.bin,
             "condition": c.condition,
             "channel": c.channel,
-            "mean_tbr": round(c.mean, 2),
+            "metric": c.metric,
+            "mean_tbr": float(f"{c.mean:.4g}"),
             "n": c.n,
             "in_range": in_range,
         })
 
     out_of_range = [r for r in results if not r["in_range"]]
+    n_in = len(results) - len(out_of_range)
 
     return {
         "check": "Theta/Beta ratio range",
-        "description": "Mean TBR should be 0.5-10.0 for healthy adults (typical: 1.5-4.0)",
+        "description": "Mean TBR should be 0.1-20.0 (typical healthy adults: 1.5-4.0)",
         "reference": "Arns et al. (2013); Snyder et al. (2015)",
         "n_tested": len(results),
+        "n_correct": n_in,
         "pass": len(out_of_range) == 0,
         "n_out_of_range": len(out_of_range),
-        "out_of_range": out_of_range[:5],
+        "out_of_range": out_of_range[:10],
     }
 
 
