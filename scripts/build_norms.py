@@ -433,6 +433,38 @@ def main():
         with open(output_dir / "merge_config.json", "w") as f:
             json.dump(merge_config, f, indent=2, default=str)
 
+        # Merge PSD checkpoints if available
+        psd_source_dirs = []
+        for merge_path in args.merge_dir:
+            # PSD checkpoints are in a sibling directory to subjects/
+            psd_candidate = merge_path.parent / "psd_checkpoints"
+            if psd_candidate.exists() and list(psd_candidate.glob("*_psd.npz")):
+                psd_source_dirs.append(psd_candidate)
+
+        if psd_source_dirs:
+            merged_psd_dir = output_dir / "psd_checkpoints"
+            merged_psd_dir.mkdir(parents=True, exist_ok=True)
+
+            # Copy/symlink PSD files from all sources
+            psd_count = 0
+            for psd_src in psd_source_dirs:
+                for npz_file in psd_src.glob("*_psd.npz"):
+                    dest = merged_psd_dir / npz_file.name
+                    if not dest.exists():
+                        import shutil
+                        shutil.copy2(npz_file, dest)
+                        psd_count += 1
+            logger.info(f"Merged {psd_count} PSD checkpoints from {len(psd_source_dirs)} sources")
+
+            # Build aggregated normative PSD
+            norms_psd_path = output_dir / "norms_psd.npz"
+            build_normative_psd(
+                merged_psd_dir, subjects_for_norms, args.age_bins,
+                norms_psd_path, logger,
+            )
+        else:
+            logger.info("No PSD checkpoints found in source directories — skipping normative PSD build.")
+
         logger.info(f"\nWrote {len(norms)} normative cells to:")
         logger.info(f"  {norms_json_path}")
         logger.info(f"  {norms_csv_path}")
