@@ -189,9 +189,69 @@ The validation scripts themselves underwent significant refinement during the pr
 
 ---
 
-## Cross-Dataset Agreement
+## Cross-Dataset Agreement: LEMON vs Dortmund
 
-*(To be added after cross-dataset validation completes)*
+Two completely independent datasets — different countries (Germany: Leipzig vs Dortmund), different labs, different BrainProducts amplifier models, recorded years apart — processed through the identical pipeline.
+
+### Global Result
+
+**r = 0.913 (p ≈ 0)** across 31,275 common normative cells. Classification: **good**.
+
+### Per-Bin Agreement
+
+| Age Bin | r | Mean \|d\| | LEMON N | Dortmund N | Notes |
+|---------|---|-----------|---------|------------|-------|
+| 20-29 | **0.985** | 0.15 | 126 | 109 | Near-perfect agreement |
+| 30-39 | 0.929 | 0.25 | 12 | 89 | LEMON thin |
+| 50-59 | 0.916 | 0.31 | 4 | 121 | LEMON very thin |
+| 60-69 | **0.969** | 0.19 | 39 | 67 | Strong agreement |
+| 70-79 | 0.914 | 0.38 | 22 | 12 | Both thin |
+
+The 20-29 bin achieves r=0.985 — Leipzig and Dortmund young adults produce nearly identical normative distributions through the same pipeline. This is the strongest possible evidence of pipeline consistency.
+
+### Per-Metric Agreement
+
+**Strong agreement (r > 0.90):**
+
+| Metric | r | Notes |
+|--------|---|-------|
+| relative_power | 0.941 | Core clinical metric |
+| corrected_relative_power | 0.954 | Specparam-corrected |
+| gsf_relative_power | 0.941 | GSF-corrected |
+| coherence hubs | 0.974-0.996 | Excellent cross-dataset connectivity agreement |
+| imcoh hubs | 0.928-0.969 | Volume-conduction resistant |
+| dwPLI hubs | 0.894-0.955 | Most robust connectivity metric |
+| coh_node_strength | 0.981 | Electrode-level connectivity |
+| band ratios (value) | 0.922 | TBR, etc. |
+
+**Expected poor agreement (same metrics that have low split-half reliability):**
+
+| Metric | r | Reason |
+|--------|---|--------|
+| absolute_power | NaN | V²/Hz scale — different amplifier gains |
+| asymmetry_index | 0.223 | Small differences, high noise |
+| pac_mi | -0.084 | Needs larger N to stabilize |
+| global_efficiency | 0.156 | Graph metrics noisy |
+| GSF scalar | 0.553 | Different amplifiers = different GSF (expected) |
+| IAF peak/cog | 0.526-0.564 | Discrete peak detection |
+
+**Critical insight:** The GSF scalar being different between datasets (r=0.55) is **expected and correct** — GSF captures amplifier gain differences, which are real between different BrainProducts models. But `gsf_relative_power` agrees at r=0.94, confirming that GSF correction successfully normalizes out these equipment differences for the metrics that matter.
+
+### Top Disagreements
+
+All 10 largest disagreements (Cohen's d > 1.88) occur in the **50-59 age bin** where LEMON has only N=4 subjects. These are not real population differences — they are sampling noise from an extremely small sample. After merging the datasets, this bin will be dominated by Dortmund's N=121 subjects.
+
+### Interpretation
+
+This cross-dataset comparison demonstrates:
+
+1. **Pipeline consistency:** The same processing pipeline applied to recordings from different labs produces highly correlated normative distributions (r=0.91-0.99) for clinically relevant metrics.
+
+2. **GSF validation:** The GSF scalar correctly captures amplifier differences (r=0.55) while GSF-corrected metrics show strong agreement (r=0.94). This confirms that GSF normalization works as intended for multi-dataset normative builds.
+
+3. **Connectivity robustness:** Hub-level coherence, dwPLI, and imaginary coherence all show excellent cross-dataset agreement (r=0.89-0.99), validating that the connectivity pipeline produces consistent results across recording setups.
+
+4. **Metrics to trust vs. flag:** Relative power, corrected relative power, connectivity metrics, and band ratios are reliable across datasets. Absolute power, PAC, graph metrics, and asymmetry should be interpreted with appropriate caveats about lower reliability.
 
 ---
 
