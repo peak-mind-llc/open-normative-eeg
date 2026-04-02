@@ -75,7 +75,10 @@ def check_alpha_posterior_dominance(norms) -> dict:
     posterior = {"O1", "O2", "Pz", "P3", "P4"}
     anterior = {"Fp1", "Fp2", "Fz", "F3", "F4"}
 
-    cells_alpha = [c for c in norms if c.band == "Alpha" and c.metric == "absolute_power"]
+    # Use relative_power (unit-independent) to avoid V²/Hz scale issues
+    cells_alpha = [c for c in norms if c.band == "Alpha" and c.metric == "relative_power"]
+    if not cells_alpha:
+        cells_alpha = [c for c in norms if c.band == "Alpha" and c.metric == "absolute_power"]
 
     results = []
     for age_bin in sorted(set(c.bin for c in cells_alpha)):
@@ -122,7 +125,23 @@ def check_eo_ec_alpha(norms) -> dict:
         - Barry et al. (2007) — EEG differences between EC and EO
         - Barry et al. (2009) — comprehensive EO/EC review
     """
-    cells_alpha = [c for c in norms if c.band == "Alpha" and c.metric == "absolute_power"]
+    # Use relative_power (unit-independent)
+    standard_channels = {
+        "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8",
+        "T3", "C3", "Cz", "C4", "T4",
+        "T5", "P3", "Pz", "P4", "T6", "O1", "O2",
+    }
+    cells_alpha = [
+        c for c in norms
+        if c.band == "Alpha" and c.metric == "relative_power"
+        and c.channel in standard_channels
+    ]
+    if not cells_alpha:
+        cells_alpha = [
+            c for c in norms
+            if c.band == "Alpha" and c.metric == "absolute_power"
+            and c.channel in standard_channels
+        ]
 
     by_key = {}
     for c in cells_alpha:
@@ -137,15 +156,14 @@ def check_eo_ec_alpha(norms) -> dict:
         ec = cond_means.get("ec")
         if eo is None or ec is None:
             continue
-        # Skip cells where both are exactly zero
         if eo == 0 and ec == 0:
             continue
         ratio = ec / eo if eo > 0 else None
         results.append({
             "bin": age_bin,
             "channel": channel,
-            "ec_mean": round(ec, 6),
-            "eo_mean": round(eo, 6),
+            "ec_mean": float(f"{ec:.6g}"),
+            "eo_mean": float(f"{eo:.6g}"),
             "ec_eo_ratio": round(ratio, 2) if ratio else None,
             "correct": ratio is not None and ratio > 1.0,
         })
@@ -320,17 +338,24 @@ def check_theta_beta_ratio_range(norms) -> dict:
         - Arns et al. (2013) — TBR meta-analysis
         - Snyder et al. (2015) — TBR in ADHD
     """
+    # TBR is stored as band="Theta/Beta", metric="value" in the nested dict
+    standard_channels = {
+        "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8",
+        "T3", "C3", "Cz", "C4", "T4",
+        "T5", "P3", "Pz", "P4", "T6", "O1", "O2",
+    }
     cells = [
         c for c in norms
-        if c.metric == "value" and c.band == "Theta/Beta" and c.n >= 5
+        if c.band == "Theta/Beta" and c.channel in standard_channels and c.n >= 5
     ]
 
-    # Also check the ratio stored directly if available
     if not cells:
-        cells = [
-            c for c in norms
-            if c.metric == "Theta/Beta" and c.n >= 5
-        ]
+        return {
+            "check": "Theta/Beta ratio range",
+            "description": "Mean TBR should be 0.5-10.0",
+            "pass": None,
+            "note": "No Theta/Beta ratio cells found in norms",
+        }
 
     results = []
     for c in cells:
@@ -360,11 +385,13 @@ def check_theta_beta_ratio_range(norms) -> dict:
 def check_relative_power_sums(norms) -> dict:
     """Relative power across non-overlapping bands should sum to ~1.0.
 
-    Non-overlapping set: Delta + Theta + Alpha + Beta + Gamma = 1.0
+    Non-overlapping set: Delta + Theta + Alpha + Beta + Gamma ~ 1.0
     (Alpha1/Alpha2, Beta1/Beta2/Beta3/HighBeta are sub-bands and should NOT
     be included in the sum.)
 
-    This is a basic sanity check on the spectral computation.
+    Note: total power denominator covers 0.5-50 Hz but Delta starts at 1 Hz,
+    so the 0.5-1 Hz sub-delta range is in the denominator but not in any
+    band. This means sums will be slightly below 1.0 (typically 0.80-0.95).
     """
     non_overlapping = {"Delta", "Theta", "Alpha", "Beta", "Gamma"}
     standard_channels = {
@@ -390,7 +417,9 @@ def check_relative_power_sums(norms) -> dict:
         if len(band_means) < 4:  # need most bands present
             continue
         total = sum(band_means.values())
-        correct = 0.85 <= total <= 1.15  # allow 15% tolerance
+        # Wide tolerance: sub-delta (0.5-1 Hz) is in the denominator but
+        # not in any band, so sums are typically 0.75-0.95
+        correct = 0.70 <= total <= 1.10
         entry = {
             "bin": key[0],
             "condition": key[1],
