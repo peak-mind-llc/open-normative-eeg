@@ -86,6 +86,8 @@ class LEMONLoader(DatasetLoader):
             | set(data_dir.glob("sub-*/RSEEG/*.vhdr"))
             | set(data_dir.glob("sub-*/ses-*/eeg/*.vhdr"))
         )
+        # Exclude patched .vhdr files created by _fix_vhdr_refs()
+        vhdr_files = [f for f in vhdr_files if not f.name.startswith(".")]
 
         if not vhdr_files:
             logger.warning("No .vhdr files found in %s/sub-*/{eeg,RSEEG,ses-*/eeg}/", data_dir)
