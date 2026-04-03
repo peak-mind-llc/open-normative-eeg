@@ -22,6 +22,10 @@ class SubjectRecord:
 class DatasetLoader(ABC):
     """Abstract base for public EEG dataset loaders."""
 
+    # Line frequency for notch filtering. Subclasses should override
+    # for non-US datasets (e.g. 50 Hz for European recordings).
+    line_freq: float = 60.0
+
     @abstractmethod
     def download(self, dest_dir: Path) -> None:
         ...

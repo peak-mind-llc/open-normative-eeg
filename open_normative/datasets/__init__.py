@@ -3,9 +3,11 @@
 from open_normative.datasets.lemon import LEMONLoader
 from open_normative.datasets.hbn import HBNLoader
 from open_normative.datasets.mipdb import MIPDBLoader
+from open_normative.datasets.dortmund import DortmundLoader
 
 DATASETS = {
     "lemon": LEMONLoader,
     "hbn": HBNLoader,
     "mipdb": MIPDBLoader,
+    "dortmund": DortmundLoader,
 }

@@ -92,6 +92,52 @@ class MetricsResult:
                     float(val) if val == val else None
                 )
 
+        # Asymmetry indices: {pair_key: {band: value}}
+        for pair_key, band_dict in self.spectral.get("asymmetry", {}).items():
+            for band, val in band_dict.items():
+                result[f"{pair_key}.{band}.asymmetry_index"] = float(val)
+
+        # GSF-corrected band power
+        for band, powers in self.spectral.get("gsf_band_power", {}).items():
+            gsf_abs = powers.get("gsf_absolute")
+            gsf_rel = powers.get("gsf_relative")
+            if gsf_abs is None:
+                continue
+            for i, ch in enumerate(ch_names):
+                result[f"{ch}.{band}.gsf_absolute_power"] = float(gsf_abs[i])
+                if gsf_rel is not None:
+                    result[f"{ch}.{band}.gsf_relative_power"] = float(gsf_rel[i])
+
+        # GSF scalar
+        gsf_val = self.spectral.get("gsf")
+        if gsf_val is not None:
+            result["_subject.broadband.gsf"] = float(gsf_val)
+
+        # IAF (Individual Alpha Frequency)
+        iaf = self.spectral.get("iaf", {})
+        if iaf:
+            if iaf.get("global_peak") is not None:
+                result["_subject.broadband.iaf_peak"] = iaf["global_peak"]
+            global_cog = iaf.get("global_cog")
+            if global_cog is not None and global_cog == global_cog:
+                result["_subject.broadband.iaf_cog"] = global_cog
+            for ch, ch_iaf in iaf.get("per_channel", {}).items():
+                if ch_iaf.get("peak_freq") is not None:
+                    result[f"{ch}.broadband.iaf_peak"] = ch_iaf["peak_freq"]
+                cog = ch_iaf.get("cog_freq")
+                if cog is not None and cog == cog:
+                    result[f"{ch}.broadband.iaf_cog"] = cog
+
+        # PAC metrics (from connectivity)
+        if self.connectivity is not None:
+            pac = self.connectivity.get("pac")
+            if pac and "theta_gamma_pac" in pac:
+                tg_pac = pac["theta_gamma_pac"]
+                for hub, mi in tg_pac.get("within_hub", {}).items():
+                    result[f"_hub_{hub}.ThetaGamma.pac_mi"] = float(mi)
+                for pair_key, mi in tg_pac.get("between_hub", {}).items():
+                    result[f"_pac_{pair_key}.ThetaGamma.pac_mi"] = float(mi)
+
         return result
 
     def to_nested_dict(self) -> dict:
@@ -187,6 +233,70 @@ class MetricsResult:
             result[ch]["broadband"]["aperiodic_offset"] = float(offset)
             result[ch]["broadband"]["aperiodic_exponent"] = float(exponent)
 
+        # Asymmetry indices: store under pair channel key (e.g. "F3/F4")
+        asymmetry = self.spectral.get("asymmetry", {})
+        for pair_key, band_dict in asymmetry.items():
+            if pair_key not in result:
+                result[pair_key] = {}
+            for band, value in band_dict.items():
+                if band not in result[pair_key]:
+                    result[pair_key][band] = {}
+                result[pair_key][band]["asymmetry_index"] = float(value)
+
+        # GSF-corrected band power
+        for band, powers in self.spectral.get("gsf_band_power", {}).items():
+            gsf_abs = powers.get("gsf_absolute")
+            gsf_rel = powers.get("gsf_relative")
+            if gsf_abs is None:
+                continue
+            for i, ch in enumerate(ch_names):
+                if ch not in result:
+                    result[ch] = {}
+                if band not in result[ch]:
+                    result[ch][band] = {}
+                result[ch][band]["gsf_absolute_power"] = float(gsf_abs[i])
+                if gsf_rel is not None:
+                    result[ch][band]["gsf_relative_power"] = float(gsf_rel[i])
+
+        # GSF scalar: store under _subject channel
+        gsf_val = self.spectral.get("gsf")
+        if gsf_val is not None:
+            if "_subject" not in result:
+                result["_subject"] = {}
+            if "broadband" not in result["_subject"]:
+                result["_subject"]["broadband"] = {}
+            result["_subject"]["broadband"]["gsf"] = float(gsf_val)
+
+        # IAF (Individual Alpha Frequency)
+        iaf = self.spectral.get("iaf", {})
+        if iaf:
+            # Global IAF under _subject channel
+            if "_subject" not in result:
+                result["_subject"] = {}
+            if "broadband" not in result["_subject"]:
+                result["_subject"]["broadband"] = {}
+            if iaf.get("global_peak") is not None:
+                result["_subject"]["broadband"]["iaf_peak"] = iaf["global_peak"]
+            global_cog = iaf.get("global_cog")
+            if global_cog is not None and not (
+                isinstance(global_cog, float) and math.isnan(global_cog)
+            ):
+                result["_subject"]["broadband"]["iaf_cog"] = global_cog
+
+            # Per-channel IAF
+            for ch, ch_iaf in iaf.get("per_channel", {}).items():
+                if ch not in result:
+                    result[ch] = {}
+                if "broadband" not in result[ch]:
+                    result[ch]["broadband"] = {}
+                if ch_iaf.get("peak_freq") is not None:
+                    result[ch]["broadband"]["iaf_peak"] = ch_iaf["peak_freq"]
+                cog = ch_iaf.get("cog_freq")
+                if cog is not None and not (
+                    isinstance(cog, float) and math.isnan(cog)
+                ):
+                    result[ch]["broadband"]["iaf_cog"] = cog
+
         # Connectivity: dwPLI node strength per electrode per band
         if self.connectivity is not None:
             elec_conn = self.connectivity.get("electrode_connectivity", {})
@@ -237,6 +347,26 @@ class MetricsResult:
                                 if i != j:
                                     key = f"{metric_name}_{hub_j}"
                                     result[hub_ch][band][key] = float(matrix[i, j])
+
+            # PAC metrics (theta-gamma phase-amplitude coupling)
+            pac = self.connectivity.get("pac")
+            if pac and "theta_gamma_pac" in pac:
+                tg_pac = pac["theta_gamma_pac"]
+                for hub, mi in tg_pac.get("within_hub", {}).items():
+                    hub_ch = f"_hub_{hub}"
+                    if hub_ch not in result:
+                        result[hub_ch] = {}
+                    if "ThetaGamma" not in result[hub_ch]:
+                        result[hub_ch]["ThetaGamma"] = {}
+                    result[hub_ch]["ThetaGamma"]["pac_mi"] = float(mi)
+
+                for pair_key, mi in tg_pac.get("between_hub", {}).items():
+                    pac_ch = f"_pac_{pair_key}"
+                    if pac_ch not in result:
+                        result[pac_ch] = {}
+                    if "ThetaGamma" not in result[pac_ch]:
+                        result[pac_ch]["ThetaGamma"] = {}
+                    result[pac_ch]["ThetaGamma"]["pac_mi"] = float(mi)
 
         return result
 

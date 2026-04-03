@@ -161,3 +161,244 @@ def test_analyze_spectral_returns_all_metrics(synthetic_raw_19ch):
     assert "corrected_ratios" in result
     assert "aperiodic" in result
     assert "asymmetry" in result
+    assert "gsf" in result
+    assert "gsf_band_power" in result
+    assert "iaf" in result
+
+
+def test_compute_gsf(synthetic_raw_19ch):
+    from open_normative.spectral import compute_gsf, compute_psd
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    gsf, corrected = compute_gsf(psds, freqs)
+    assert isinstance(gsf, float)
+    assert corrected.shape == psds.shape
+    # After GSF correction, mean of log10(corrected) should be ~0
+    assert abs(np.mean(np.log10(np.maximum(corrected, 1e-30)))) < 1e-10
+
+
+def test_compute_gsf_band_power(synthetic_raw_19ch):
+    from open_normative.spectral import (
+        compute_gsf, compute_gsf_band_power, compute_psd
+    )
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    _, gsf_psds = compute_gsf(psds, freqs)
+    gsf_bp = compute_gsf_band_power(gsf_psds, freqs, params["bands"])
+    assert "Alpha" in gsf_bp
+    assert "gsf_absolute" in gsf_bp["Alpha"]
+    assert "gsf_relative" in gsf_bp["Alpha"]
+    assert len(gsf_bp["Alpha"]["gsf_absolute"]) == 19
+
+
+def test_compute_iaf(synthetic_raw_19ch):
+    from open_normative.spectral import (
+        compute_iaf, compute_psd, compute_aperiodic
+    )
+    params = PIPELINE_PARAMS["spectral"]
+    psds, freqs = compute_psd(synthetic_raw_19ch, params)
+    # Use mock aperiodic with no peaks (specparam not installed)
+    aperiodic = {ch: {"peak_params": [], "fit_quality": "skipped"}
+                 for ch in synthetic_raw_19ch.ch_names}
+    iaf = compute_iaf(psds, freqs, list(synthetic_raw_19ch.ch_names),
+                      aperiodic, params.get("iaf", {}))
+    assert "per_channel" in iaf
+    assert "global_cog" in iaf
+    # CoG should be in alpha range since synthetic data has 10 Hz peak
+    assert 7 <= iaf["global_cog"] <= 14
+    # No peaks detected (no specparam), so global_peak should be None
+    assert iaf["global_peak"] is None
+
+
+def test_normative_includes_asymmetry(mock_subject_metrics):
+    from open_normative.normative import build_normative
+    norms = build_normative(mock_subject_metrics)
+    asym_cells = [c for c in norms if c.channel == "F3/F4"]
+    assert len(asym_cells) > 0
+    assert any(c.metric == "asymmetry_index" for c in asym_cells)
+
+
+def test_norm_cell_has_ci(mock_subject_metrics):
+    from open_normative.normative import build_normative
+    norms = build_normative(mock_subject_metrics)
+    cells_with_ci = [c for c in norms if c.ci_lower is not None]
+    assert len(cells_with_ci) > 0
+    for c in cells_with_ci:
+        assert c.ci_lower < c.mean
+        assert c.ci_upper > c.mean
+
+
+def test_fdr_correction():
+    from open_normative.compare import ComparisonResult, apply_fdr_correction
+    # Create results with a mix of significant and non-significant z-scores
+    results = []
+    for i in range(20):
+        z = 0.5  # not significant
+        results.append(ComparisonResult(
+            channel="Fz", band="Alpha", metric="absolute_power",
+            value=1.0, z_score=z, percentile_rank=50.0,
+            norm_mean=1.0, norm_sd=1.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        ))
+    # Add a few extreme values
+    for z in [3.5, -4.0, 3.0]:
+        results.append(ComparisonResult(
+            channel="Fz", band="Theta", metric="absolute_power",
+            value=1.0, z_score=z, percentile_rank=99.0,
+            norm_mean=1.0, norm_sd=1.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        ))
+    apply_fdr_correction(results)
+    sig = [r for r in results if r.fdr_significant]
+    non_sig = [r for r in results if r.fdr_significant is False]
+    # The 3 extreme z-scores should survive FDR
+    assert len(sig) == 3
+    assert len(non_sig) == 20
+
+
+# ---------------------------------------------------------------------------
+# Clinical transparency tests (SE(z), Cohen's d, severity, PI, patterns)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_se_z():
+    from open_normative.compare import compute_se_z
+    import math
+    se = compute_se_z(2.0, 50)
+    expected = math.sqrt(1/50 + 4/(2*50))
+    assert abs(se - expected) < 1e-10
+    assert compute_se_z(0.0, 1) is None  # n < 2
+
+
+def test_cohen_d_classification():
+    from open_normative.compare import classify_cohen_d
+    assert classify_cohen_d(0.1) == "negligible"
+    assert classify_cohen_d(0.3) == "small"
+    assert classify_cohen_d(0.6) == "medium"
+    assert classify_cohen_d(1.5) == "large"
+    assert classify_cohen_d(-0.9) == "large"  # uses absolute value
+
+
+def test_severity_labels():
+    from open_normative.compare import assign_severity_label
+    assert assign_severity_label(0.3) == "Within typical limits"
+    assert assign_severity_label(0.7) == "Mildly atypical"
+    assert assign_severity_label(1.2) == "Moderately atypical"
+    assert assign_severity_label(1.8) == "Notably atypical"
+    assert assign_severity_label(2.5) == "Markedly atypical"
+    assert assign_severity_label(4.0) == "Extremely atypical"
+    assert assign_severity_label(-2.5) == "Markedly atypical"  # uses abs
+
+
+def test_prediction_interval_wider_than_ci(mock_subject_metrics):
+    from open_normative.normative import build_normative
+    norms = build_normative(mock_subject_metrics)
+    for c in norms:
+        if c.ci_lower is not None and c.pi_lower is not None:
+            assert c.pi_lower < c.ci_lower, "PI should be wider than CI"
+            assert c.pi_upper > c.ci_upper, "PI should be wider than CI"
+
+
+def test_global_pattern_detection():
+    from open_normative.compare import (
+        ComparisonResult, EnrichedResult, detect_global_patterns
+    )
+    from open_normative.parameters import PIPELINE_PARAMS
+    channels = PIPELINE_PARAMS["channels"]["channels_19"]
+    # All 19 channels elevated in Alpha
+    enriched = []
+    for ch in channels:
+        r = ComparisonResult(
+            channel=ch, band="Alpha", metric="absolute_power",
+            value=50.0, z_score=2.5, percentile_rank=99.0,
+            norm_mean=20.0, norm_sd=10.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        )
+        enriched.append(EnrichedResult(base=r))
+    patterns = detect_global_patterns(enriched, channels)
+    assert len(patterns) >= 1
+    assert patterns[0]["direction"] == "elevated"
+    assert patterns[0]["fraction"] >= 0.6
+
+
+def test_cluster_detection():
+    from open_normative.compare import (
+        ComparisonResult, EnrichedResult, detect_deviation_clusters
+    )
+    from open_normative.parameters import REPORT_PARAMS
+    adjacency = REPORT_PARAMS["adjacency_19"]
+    # O1, O2, P3 are all adjacent — create a cluster
+    enriched = []
+    for ch in ["O1", "O2", "P3"]:
+        r = ComparisonResult(
+            channel=ch, band="Theta", metric="absolute_power",
+            value=50.0, z_score=2.5, percentile_rank=99.0,
+            norm_mean=20.0, norm_sd=10.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        )
+        enriched.append(EnrichedResult(base=r))
+    clusters = detect_deviation_clusters(enriched, adjacency)
+    assert len(clusters) >= 1
+    assert set(clusters[0].channels) == {"O1", "O2", "P3"}
+
+
+def test_metric_disagreement():
+    from open_normative.compare import (
+        ComparisonResult, EnrichedResult, detect_metric_disagreements
+    )
+    enriched = [
+        EnrichedResult(base=ComparisonResult(
+            channel="Fz", band="Alpha", metric="absolute_power",
+            value=50.0, z_score=2.5, percentile_rank=99.0,
+            norm_mean=20.0, norm_sd=10.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        )),
+        EnrichedResult(base=ComparisonResult(
+            channel="Fz", band="Alpha", metric="corrected_absolute_power",
+            value=18.0, z_score=-0.3, percentile_rank=40.0,
+            norm_mean=20.0, norm_sd=10.0, norm_n=50,
+            bin="20-29", low_confidence=False,
+        )),
+    ]
+    disagreements = detect_metric_disagreements(enriched)
+    assert len(disagreements) == 1
+    assert disagreements[0]["channel"] == "Fz"
+    assert "aperiodic" in disagreements[0]["interpretation"]
+
+
+def test_comparison_report_to_dict(mock_subject_metrics):
+    import json
+    from open_normative.normative import build_normative
+    from open_normative.compare import compare_and_report
+    norms = build_normative(mock_subject_metrics)
+    metrics = {
+        "Fz": {
+            "Alpha": {"absolute_power": 50.0, "relative_power": 0.35},
+            "Theta": {"absolute_power": 20.0, "relative_power": 0.15},
+        },
+    }
+    report = compare_and_report(metrics, norms, age=30, condition="eo")
+    d = report.to_dict()
+    # Should be JSON-serializable
+    json_str = json.dumps(d)
+    assert len(json_str) > 0
+    assert "metadata" in d
+    assert "results" in d
+    assert "patterns" in d
+    assert d["metadata"]["total_tests"] >= 0
+
+
+def test_comparison_report_summary_text(mock_subject_metrics):
+    from open_normative.normative import build_normative
+    from open_normative.compare import compare_and_report
+    norms = build_normative(mock_subject_metrics)
+    metrics = {
+        "Fz": {
+            "Alpha": {"absolute_power": 50.0},
+            "Theta": {"absolute_power": 20.0},
+        },
+    }
+    report = compare_and_report(metrics, norms, age=30, condition="eo")
+    text = report.summary_text()
+    assert "Comparison Report" in text
+    assert "tests performed" in text

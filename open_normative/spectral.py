@@ -296,6 +296,158 @@ def compute_asymmetry(
     return results
 
 
+def compute_gsf(
+    psds: np.ndarray, freqs: np.ndarray
+) -> tuple[float, np.ndarray]:
+    """Compute Global Scale Factor and GSF-corrected PSD.
+
+    GSF captures non-neurophysiological variance (skull thickness, hair,
+    amplifier gain) that scales the entire spectrum uniformly. Accounts
+    for ~42% of variance in age-corrected EEG data. Critical for
+    multi-dataset normative builds across different amplifier systems.
+
+    Args:
+        psds: Shape (n_channels, n_freqs), in V^2/Hz.
+        freqs: Frequency array.
+
+    Returns:
+        (gsf, corrected_psds) where gsf is the scalar log10-mean and
+        corrected_psds is the GSF-corrected PSD, same shape as psds.
+    """
+    psds_positive = np.maximum(psds, 1e-30)
+    log10_psds = np.log10(psds_positive)
+    gsf = float(np.mean(log10_psds))
+    corrected_log10 = log10_psds - gsf
+    corrected_psds = np.power(10.0, corrected_log10)
+    return gsf, corrected_psds
+
+
+def compute_gsf_band_power(
+    gsf_psds: np.ndarray, freqs: np.ndarray, bands: dict
+) -> dict:
+    """Compute band power from GSF-corrected PSD.
+
+    Args:
+        gsf_psds: GSF-corrected PSD, shape (n_channels, n_freqs).
+        freqs: Frequency array.
+        bands: Dict of {band_name: [fmin, fmax]}.
+
+    Returns:
+        Dict of {band_name: {"gsf_absolute": array, "gsf_relative": array}}.
+    """
+    total_power = np.trapezoid(gsf_psds, freqs, axis=1)
+    band_power = {}
+    for band_name, (fmin, fmax) in bands.items():
+        idx = np.where((freqs >= fmin) & (freqs <= fmax))[0]
+        if len(idx) == 0:
+            band_power[band_name] = {
+                "gsf_absolute": np.zeros(gsf_psds.shape[0]),
+                "gsf_relative": np.zeros(gsf_psds.shape[0]),
+            }
+            continue
+        abs_power = np.trapezoid(gsf_psds[:, idx], freqs[idx], axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rel_power = np.where(total_power > 0, abs_power / total_power, 0.0)
+        band_power[band_name] = {
+            "gsf_absolute": abs_power,
+            "gsf_relative": rel_power,
+        }
+    return band_power
+
+
+def compute_iaf(
+    psds: np.ndarray,
+    freqs: np.ndarray,
+    ch_names: list[str],
+    aperiodic: dict,
+    params: dict,
+) -> dict:
+    """Compute Individual Alpha Frequency per channel and global.
+
+    Uses two methods:
+    1. Peak frequency: highest-power specparam peak in the alpha search range.
+    2. Center of gravity (CoG): spectral centroid of the alpha region
+       (Corcoran et al., 2018).
+
+    Args:
+        psds: Shape (n_channels, n_freqs), in V^2/Hz.
+        freqs: Frequency array.
+        ch_names: Channel names.
+        aperiodic: Dict from compute_aperiodic() with peak_params per channel.
+        params: IAF params with search_range, posterior_channels.
+
+    Returns:
+        Dict with per_channel, global_peak, global_cog, posterior_channels,
+        typical_range.
+    """
+    search_range = params.get("search_range", [7, 14])
+    posterior_channels = params.get(
+        "posterior_channels", ["O1", "O2", "Pz", "P3", "P4"]
+    )
+    typical_lo, typical_hi = params.get("typical_range", [9, 11])
+
+    alpha_idx = np.where(
+        (freqs >= search_range[0]) & (freqs <= search_range[1])
+    )[0]
+    alpha_freqs = freqs[alpha_idx]
+
+    per_channel = {}
+    for i, ch in enumerate(ch_names):
+        # Method 1: Peak from specparam peak_params
+        peak_freq = None
+        ap = aperiodic.get(ch, {})
+        peaks = ap.get("peak_params", [])
+        alpha_peaks = [
+            p for p in peaks
+            if search_range[0] <= p[0] <= search_range[1]
+        ]
+        if alpha_peaks:
+            best_peak = max(alpha_peaks, key=lambda p: p[1])
+            peak_freq = float(best_peak[0])
+
+        # Method 2: Center of gravity on the PSD in alpha range
+        cog_freq = float("nan")
+        if len(alpha_idx) > 0:
+            alpha_psd = psds[i, alpha_idx]
+            total = np.sum(alpha_psd)
+            if total > 0:
+                cog_freq = float(np.sum(alpha_freqs * alpha_psd) / total)
+
+        per_channel[ch] = {
+            "peak_freq": peak_freq,
+            "cog_freq": cog_freq,
+        }
+
+    # Global IAF: average over posterior channels
+    posterior_peaks = [
+        per_channel[ch]["peak_freq"]
+        for ch in posterior_channels
+        if ch in per_channel and per_channel[ch]["peak_freq"] is not None
+    ]
+    posterior_cogs = [
+        per_channel[ch]["cog_freq"]
+        for ch in posterior_channels
+        if ch in per_channel and not np.isnan(per_channel[ch]["cog_freq"])
+    ]
+
+    global_peak = float(np.mean(posterior_peaks)) if posterior_peaks else None
+    global_cog = float(np.mean(posterior_cogs)) if posterior_cogs else float("nan")
+
+    # Flag typical range
+    iaf_value = global_peak if global_peak is not None else global_cog
+    typical_range = None
+    if iaf_value is not None and not np.isnan(iaf_value):
+        typical_range = typical_lo <= iaf_value <= typical_hi
+
+    return {
+        "per_channel": per_channel,
+        "global_peak": global_peak,
+        "global_cog": global_cog,
+        "posterior_channels": posterior_channels,
+        "typical_range": typical_range,
+    }
+
+
 def analyze_spectral(raw, params: dict) -> dict:
     """Run full spectral analysis pipeline.
 
@@ -316,6 +468,17 @@ def analyze_spectral(raw, params: dict) -> dict:
     asymmetry = compute_asymmetry(
         band_power, raw.ch_names, params["asymmetry"]["homologous_pairs"]
     )
+
+    # GSF correction
+    gsf_scalar, gsf_psds = compute_gsf(psds, freqs)
+    gsf_band_power = compute_gsf_band_power(gsf_psds, freqs, params["bands"])
+
+    # Individual Alpha Frequency
+    iaf = compute_iaf(
+        psds, freqs, list(raw.ch_names), aperiodic,
+        params.get("iaf", {}),
+    )
+
     return {
         "psds": psds,
         "freqs": freqs,
@@ -325,4 +488,7 @@ def analyze_spectral(raw, params: dict) -> dict:
         "corrected_ratios": corrected_ratios,
         "aperiodic": aperiodic,
         "asymmetry": asymmetry,
+        "gsf": gsf_scalar,
+        "gsf_band_power": gsf_band_power,
+        "iaf": iaf,
     }

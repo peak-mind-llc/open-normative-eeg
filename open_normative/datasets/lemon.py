@@ -47,10 +47,14 @@ _META_CSV_NAME = "META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv"
 class LEMONLoader(DatasetLoader):
     """Loader for the LEMON resting-state EEG dataset.
 
+    Recorded in Leipzig, Germany — line noise is 50 Hz.
+
     Supports two demographics file formats:
     - The META CSV shipped with the GWDG download (auto-detected)
     - A BIDS-style participants.tsv (e.g. from OpenNeuro ds000221)
     """
+
+    line_freq: float = 50.0
 
     def download(self, dest_dir: Path) -> None:
         raise NotImplementedError(_DOWNLOAD_INSTRUCTIONS)
@@ -82,6 +86,8 @@ class LEMONLoader(DatasetLoader):
             | set(data_dir.glob("sub-*/RSEEG/*.vhdr"))
             | set(data_dir.glob("sub-*/ses-*/eeg/*.vhdr"))
         )
+        # Exclude patched .vhdr files created by _fix_vhdr_refs()
+        vhdr_files = [f for f in vhdr_files if not f.name.startswith(".")]
 
         if not vhdr_files:
             logger.warning("No .vhdr files found in %s/sub-*/{eeg,RSEEG,ses-*/eeg}/", data_dir)
@@ -90,11 +96,14 @@ class LEMONLoader(DatasetLoader):
         logger.info("Found %d .vhdr files", len(vhdr_files))
 
         for vhdr_path in vhdr_files:
-            # Extract subject ID from path — handle both sub-*/eeg/ and sub-*/ses-*/eeg/
+            # Extract subject ID from the directory path (not the filename).
+            # The filename itself may start with "sub-" (e.g. sub-032301.vhdr)
+            # which would incorrectly match as a subject ID.
             subject_id = None
-            for part in vhdr_path.parts:
+            for part in vhdr_path.parent.parts:
                 if part.startswith("sub-"):
                     subject_id = part
+                    break
             if subject_id is None:
                 logger.warning("Could not extract subject ID from %s", vhdr_path)
                 continue
@@ -373,8 +382,9 @@ def _fix_vhdr_refs(vhdr_path: Path) -> Path:
 
 
 # LEMON stimulus markers for resting-state conditions
-_EO_MARKER = "Stimulus/S210"
-_EC_MARKER = "Stimulus/S200"
+# Per Babayan et al. (2019): S200 = eyes open, S210 = eyes closed
+_EO_MARKER = "Stimulus/S200"
+_EC_MARKER = "Stimulus/S210"
 
 
 def _split_by_markers(raw: mne.io.BaseRaw) -> dict[str, mne.io.BaseRaw]:

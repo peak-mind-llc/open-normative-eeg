@@ -433,6 +433,38 @@ def main():
         with open(output_dir / "merge_config.json", "w") as f:
             json.dump(merge_config, f, indent=2, default=str)
 
+        # Merge PSD checkpoints if available
+        psd_source_dirs = []
+        for merge_path in args.merge_dir:
+            # PSD checkpoints are in a sibling directory to subjects/
+            psd_candidate = merge_path.parent / "psd_checkpoints"
+            if psd_candidate.exists() and list(psd_candidate.glob("*_psd.npz")):
+                psd_source_dirs.append(psd_candidate)
+
+        if psd_source_dirs:
+            merged_psd_dir = output_dir / "psd_checkpoints"
+            merged_psd_dir.mkdir(parents=True, exist_ok=True)
+
+            # Copy/symlink PSD files from all sources
+            psd_count = 0
+            for psd_src in psd_source_dirs:
+                for npz_file in psd_src.glob("*_psd.npz"):
+                    dest = merged_psd_dir / npz_file.name
+                    if not dest.exists():
+                        import shutil
+                        shutil.copy2(npz_file, dest)
+                        psd_count += 1
+            logger.info(f"Merged {psd_count} PSD checkpoints from {len(psd_source_dirs)} sources")
+
+            # Build aggregated normative PSD
+            norms_psd_path = output_dir / "norms_psd.npz"
+            build_normative_psd(
+                merged_psd_dir, subjects_for_norms, args.age_bins,
+                norms_psd_path, logger,
+            )
+        else:
+            logger.info("No PSD checkpoints found in source directories — skipping normative PSD build.")
+
         logger.info(f"\nWrote {len(norms)} normative cells to:")
         logger.info(f"  {norms_json_path}")
         logger.info(f"  {norms_csv_path}")
@@ -484,15 +516,34 @@ def main():
     LoaderClass = DATASETS[args.dataset]
     loader = LoaderClass()
 
+    # Apply dataset-specific line frequency (e.g. 50 Hz for European datasets)
+    if hasattr(loader, "line_freq") and loader.line_freq != PIPELINE_PARAMS["preprocessing"]["filter"]["notch_freq"]:
+        logger.info(
+            f"Dataset line frequency: {loader.line_freq} Hz "
+            f"(overriding default {PIPELINE_PARAMS['preprocessing']['filter']['notch_freq']} Hz)"
+        )
+        import copy
+        params_override = copy.deepcopy(PIPELINE_PARAMS)
+        params_override["preprocessing"]["filter"]["notch_freq"] = loader.line_freq
+        # Update harmonics for the new line frequency
+        params_override["preprocessing"]["filter"]["notch_harmonics"] = [
+            loader.line_freq * h for h in (2, 3)
+        ]
+    else:
+        params_override = None
+
     # Load QC allow-list if provided
     qc_allow = None
     if args.qc_dir:
+        # Support both naming conventions from QC scripts
         ready_path = args.qc_dir / "ready.txt"
+        if not ready_path.exists():
+            ready_path = args.qc_dir / "ready_subjects.txt"
         if ready_path.exists():
             qc_allow = set(ready_path.read_text().strip().splitlines())
             logger.info(f"QC filter: {len(qc_allow)} subjects in {ready_path}")
         else:
-            logger.warning(f"QC dir provided but {ready_path} not found — processing all subjects")
+            logger.warning(f"QC dir provided but no ready.txt or ready_subjects.txt found — processing all subjects")
 
     # Count and filter subjects
     logger.info(f"Scanning {args.data_dir} for {args.dataset} subjects...")
@@ -551,6 +602,7 @@ def main():
             result = process_resting(
                 record.raw,
                 condition=record.condition,
+                params=params_override,
                 skip_connectivity=args.skip_connectivity,
             )
 

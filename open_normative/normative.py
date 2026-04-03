@@ -19,6 +19,7 @@ from scipy import stats
 _LOG_TRANSFORM_METRICS = {
     "absolute_power",
     "corrected_absolute_power",
+    "gsf_absolute_power",
     "Theta/Beta",
     "Theta/Beta1",
     "Delta/HighBeta",
@@ -86,6 +87,10 @@ class NormCell:
     log_transformed: bool
     normality_p: Optional[float]
     percentiles: dict
+    ci_lower: Optional[float] = None
+    ci_upper: Optional[float] = None
+    pi_lower: Optional[float] = None
+    pi_upper: Optional[float] = None
 
 
 def _compute_cell(
@@ -131,6 +136,24 @@ def _compute_cell(
         for p in _PERCENTILE_POINTS:
             percentiles[str(p)] = mean
 
+    # 95% confidence interval for the mean.
+    ci_lower = None
+    ci_upper = None
+    if n >= 2 and sd > 0:
+        se = sd / np.sqrt(n)
+        t_crit = float(stats.t.ppf(0.975, df=n - 1))
+        ci_lower = float(mean - t_crit * se)
+        ci_upper = float(mean + t_crit * se)
+
+    # 95% prediction interval for a new individual observation.
+    # PI is wider than CI — it answers "where would a new healthy person fall?"
+    pi_lower = None
+    pi_upper = None
+    if n >= 2 and sd > 0:
+        t_crit_pi = float(stats.t.ppf(0.975, df=n - 1))
+        pi_lower = float(mean - t_crit_pi * sd * np.sqrt(1 + 1 / n))
+        pi_upper = float(mean + t_crit_pi * sd * np.sqrt(1 + 1 / n))
+
     return NormCell(
         bin=bin_label,
         condition=condition,
@@ -145,6 +168,10 @@ def _compute_cell(
         log_transformed=log_transformed,
         normality_p=normality_p,
         percentiles=percentiles,
+        ci_lower=ci_lower,
+        ci_upper=ci_upper,
+        pi_lower=pi_lower,
+        pi_upper=pi_upper,
     )
 
 

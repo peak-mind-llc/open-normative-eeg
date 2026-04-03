@@ -46,7 +46,15 @@ def read_norms_json(filepath: PathLike) -> list[NormCell]:
     """
     with open(filepath, "r", encoding="utf-8") as fh:
         data = json.load(fh)
-    return [NormCell(**item) for item in data]
+    cells = []
+    for item in data:
+        # Backward compat: add defaults for fields added after v1.0.
+        item.setdefault("ci_lower", None)
+        item.setdefault("ci_upper", None)
+        item.setdefault("pi_lower", None)
+        item.setdefault("pi_upper", None)
+        cells.append(NormCell(**item))
+    return cells
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +80,7 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
     base_fields = [
         "bin", "condition", "channel", "band", "metric",
         "n", "mean", "sd", "log_mean", "log_sd", "log_transformed",
-        "normality_p",
+        "normality_p", "ci_lower", "ci_upper", "pi_lower", "pi_upper",
     ]
     fieldnames = base_fields + pct_cols
 
@@ -93,6 +101,10 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
                 "log_sd": cell.log_sd,
                 "log_transformed": cell.log_transformed,
                 "normality_p": cell.normality_p,
+                "ci_lower": cell.ci_lower,
+                "ci_upper": cell.ci_upper,
+                "pi_lower": cell.pi_lower,
+                "pi_upper": cell.pi_upper,
             }
             for p in _PERCENTILE_POINTS:
                 row[f"p{p}"] = cell.percentiles.get(str(p))
