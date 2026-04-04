@@ -56,54 +56,63 @@ def _process_one_subject(
     and all arguments must be picklable).
 
     Returns the subject_data dict ready for checkpointing.
+    Raises RuntimeError on failure (never FloatingPointError or other
+    errors that could kill the worker process).
     """
-    import mne
-    from open_normative.channels import pick_standard_channels
+    try:
+        import mne
+        from open_normative.channels import pick_standard_channels
 
-    filepath = Path(filepath)
-    ext = filepath.suffix.lower()
+        filepath = Path(filepath)
+        ext = filepath.suffix.lower()
 
-    # Load raw data
-    loaders = {
-        ".vhdr": mne.io.read_raw_brainvision,
-        ".edf": mne.io.read_raw_edf,
-        ".set": mne.io.read_raw_eeglab,
-        ".fif": mne.io.read_raw_fif,
-        ".mff": mne.io.read_raw_egi,
-    }
-    raw = loaders[ext](str(filepath), preload=True, verbose=False)
-    raw.pick("eeg")
+        # Load raw data
+        loaders = {
+            ".vhdr": mne.io.read_raw_brainvision,
+            ".edf": mne.io.read_raw_edf,
+            ".set": mne.io.read_raw_eeglab,
+            ".fif": mne.io.read_raw_fif,
+            ".mff": mne.io.read_raw_egi,
+        }
+        raw = loaders[ext](str(filepath), preload=True, verbose=False)
+        raw.pick("eeg")
 
-    # Handle single-file recordings with marker-based condition splitting
-    if marker_condition is not None:
-        from open_normative.datasets.lemon import _split_by_markers
-        splits = _split_by_markers(raw)
-        if marker_condition in splits:
-            raw = splits[marker_condition]
-        else:
-            raise ValueError(
-                f"Condition {marker_condition} not found in markers "
-                f"for {filepath}"
-            )
+        # Handle single-file recordings with marker-based condition splitting
+        if marker_condition is not None:
+            from open_normative.datasets.lemon import _split_by_markers
+            splits = _split_by_markers(raw)
+            if marker_condition in splits:
+                raw = splits[marker_condition]
+            else:
+                raise ValueError(
+                    f"Condition {marker_condition} not found in markers "
+                    f"for {filepath}"
+                )
 
-    raw = pick_standard_channels(raw, n_channels=n_channels)
+        raw = pick_standard_channels(raw, n_channels=n_channels)
 
-    result = process_resting(
-        raw,
-        condition=condition,
-        params=params,
-        skip_connectivity=skip_connectivity,
-        source=source,
-    )
+        result = process_resting(
+            raw,
+            condition=condition,
+            params=params,
+            skip_connectivity=skip_connectivity,
+            source=source,
+        )
 
-    return {
-        "subject_id": subject_id,
-        "age": age,
-        "sex": sex,
-        "condition": condition,
-        "metrics": result.to_nested_dict(),
-        "_spectral": result.spectral,  # For PSD checkpointing; stripped before norm build
-    }
+        return {
+            "subject_id": subject_id,
+            "age": age,
+            "sex": sex,
+            "condition": condition,
+            "metrics": result.to_nested_dict(),
+            "_spectral": result.spectral,
+        }
+    except BaseException as exc:
+        # Convert any error (including FloatingPointError, which can kill
+        # the ProcessPoolExecutor) into a RuntimeError so the pool survives.
+        raise RuntimeError(
+            f"{subject_id} ({condition}): {type(exc).__name__}: {exc}"
+        ) from None
 
 
 def _save_subject_result(

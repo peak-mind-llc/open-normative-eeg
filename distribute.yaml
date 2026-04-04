@@ -6,23 +6,23 @@ machines:
   dev-mac-1:
     host: localhost
     user: hiro
-    jobs: 4
+    jobs: 2
     data_root: /Volumes/dev
-    python: python3
+    python: /Users/hiro/.eeg-normative-env/bin/python
 
   dev-linux-1:
     host: dev-linux-1
     user: hiro
-    jobs: 6
+    jobs: 2
     data_root: /mnt/dev
-    python: python3
+    python: ~/.eeg-normative-env/bin/python
 
   dev-linux-2:
     host: dev-linux-2
     user: hiro
     jobs: 3
     data_root: /mnt/dev
-    python: python3
+    python: ~/.eeg-normative-env/bin/python
 
 project:
   # Repo on the NFS share (clone once, all machines use it)
@@ -38,9 +38,8 @@ defaults:
   condition: both
   channels: 37
   skip_connectivity: false
-  # Extra args appended to build_norms.py command
-  # e.g. "--source --save-psd --qc-dir /path/to/qc"
-  extra_args: ""
+  save_psd: true
+  extra_args: "--source"
 
 # Python environment setup (used by 'distribute.py setup')
 env:

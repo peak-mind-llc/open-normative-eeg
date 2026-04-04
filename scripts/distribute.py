@@ -256,7 +256,7 @@ def cmd_run(cfg: dict, args: argparse.Namespace):
         if end <= start:
             continue
         m = enabled_machines[name]
-        cmd = _build_command(m, project, defaults, name, start, end)
+        cmd = _build_command(m, project, defaults, name, start, end, cfg.get("dataset_paths"))
 
         prefix = ssh_prefix(m)
         if prefix:
@@ -280,24 +280,24 @@ def cmd_run(cfg: dict, args: argparse.Namespace):
     # Monitor and log output
     logger.info(f"\n{len(processes)} machines running. Monitoring...")
 
-    # Write logs to files
+    # Find a local machine for writing logs (use its data_root)
     output_base = project.get("output_base", "norms_output")
-    for name, info in processes.items():
-        m = info["machine"]
-        log_dir = Path(remote_path(m, output_base)) / name
-        log_dir.mkdir(parents=True, exist_ok=True)
+    local_root = None
+    for m in enabled_machines.values():
+        if m["host"] in ("localhost", "127.0.0.1", ""):
+            local_root = m["data_root"]
+            break
 
     # Wait for all to complete
     for name, info in processes.items():
         proc = info["proc"]
         stdout, _ = proc.communicate()
 
-        m = info["machine"]
-        log_path = Path(remote_path(m, output_base)) / name / "run.log"
-        # Only write if path is local
-        if m["host"] in ("localhost", "127.0.0.1", ""):
+        # Write logs using the local NFS mount path
+        if local_root:
+            log_path = Path(f"{local_root}/{output_base}") / name / "run.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(stdout)
+            log_path.write_text(stdout or "")
 
         if proc.returncode == 0:
             logger.info(f"  {name}: DONE")
