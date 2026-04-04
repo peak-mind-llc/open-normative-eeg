@@ -403,7 +403,7 @@ class DeviationCluster:
 
 def detect_global_patterns(
     results: list[EnrichedResult],
-    channels_19: list[str],
+    channels: list[str],
     fraction_threshold: float = 0.6,
     z_threshold: float = 1.5,
 ) -> list[dict]:
@@ -416,7 +416,7 @@ def detect_global_patterns(
         List of dicts with band, metric, direction, fraction, channel_count,
         total_channels, interpretation.
     """
-    channels_set = set(channels_19)
+    channels_set = set(channels)
     # Group results by (band, metric)
     groups: dict[tuple[str, str], list[EnrichedResult]] = defaultdict(list)
     for er in results:
@@ -785,12 +785,20 @@ def build_comparison_report(
 
     # Pattern analysis
     from open_normative.parameters import PIPELINE_PARAMS
-    channels_19 = PIPELINE_PARAMS["channels"]["channels_19"]
-    adjacency = config.get("adjacency_19", {})
+    ch_cfg = PIPELINE_PARAMS["channels"]
+    # Determine channel set from data: check if any result uses a 37ch channel
+    _37ch_extras = set(ch_cfg["channels_37"]) - set(ch_cfg["channels_19"])
+    result_channels = {er.base.channel for er in enriched}
+    if result_channels & _37ch_extras:
+        channels = ch_cfg["channels_37"]
+        adjacency = config.get("adjacency_37", config.get("adjacency_19", {}))
+    else:
+        channels = ch_cfg["channels_19"]
+        adjacency = config.get("adjacency_19", {})
 
     gp_config = config.get("global_pattern", {})
     global_patterns = detect_global_patterns(
-        enriched, channels_19,
+        enriched, channels,
         fraction_threshold=gp_config.get("channel_fraction_threshold", 0.6),
         z_threshold=gp_config.get("z_threshold", 1.5),
     )

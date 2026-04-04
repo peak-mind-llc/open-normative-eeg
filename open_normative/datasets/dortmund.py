@@ -28,8 +28,8 @@ from pathlib import Path
 
 import mne
 
-from open_normative.channels import pick_standard_19
-from open_normative.datasets.base import DatasetLoader, SubjectRecord
+from open_normative.channels import pick_standard_channels
+from open_normative.datasets.base import DatasetLoader, SubjectFileRecord, SubjectRecord
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class DortmundLoader(DatasetLoader):
             # Drop non-EEG channels, standardize to 19 channels
             raw.pick("eeg")
             try:
-                raw = pick_standard_19(raw)
+                raw = pick_standard_channels(raw, n_channels=self.n_channels)
             except Exception:
                 logger.warning(
                     "Channel standardization failed for %s — skipping",
@@ -152,6 +152,46 @@ class DortmundLoader(DatasetLoader):
                 sex=sex,
                 raw=raw,
                 condition=condition,
+                metadata=metadata,
+            )
+
+    def iter_subject_files(self, data_dir: Path) -> Iterator[SubjectFileRecord]:
+        """Yield SubjectFileRecord for each pre-task EO/EC file without loading."""
+        participants = self._load_participants(data_dir)
+
+        eeg_files = sorted(
+            set(data_dir.glob("sub-*/ses-1/eeg/*.edf"))
+            | set(data_dir.glob("sub-*/ses-1/eeg/*.vhdr"))
+            | set(data_dir.glob("sub-*/ses-1/eeg/*.set"))
+            | set(data_dir.glob("sub-*/eeg/*.edf"))
+            | set(data_dir.glob("sub-*/eeg/*.vhdr"))
+            | set(data_dir.glob("sub-*/eeg/*.set"))
+        )
+
+        for eeg_path in eeg_files:
+            if not self._is_pre_task(eeg_path):
+                continue
+
+            subject_id = None
+            for part in eeg_path.parts:
+                if part.startswith("sub-"):
+                    subject_id = part
+                    break
+            if subject_id is None:
+                continue
+
+            condition = self._detect_condition(eeg_path.name)
+            if condition is None:
+                continue
+
+            info = participants.get(subject_id, {})
+            age = info.get("age", float("nan"))
+            sex = info.get("sex", "")
+            metadata = {"source_file": str(eeg_path), **info}
+
+            yield SubjectFileRecord(
+                subject_id=subject_id, age=age, sex=sex,
+                condition=condition, filepath=eeg_path,
                 metadata=metadata,
             )
 

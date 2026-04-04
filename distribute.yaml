@@ -1,0 +1,55 @@
+# Distributed normative EEG processing configuration
+# Edit machine hostnames, users, and Python paths to match your setup.
+# Generate with: python scripts/distribute.py --init
+
+machines:
+  dev-mac-1:
+    host: localhost
+    user: hiro
+    jobs: 4
+    data_root: /Volumes/dev
+    python: python3
+
+  dev-linux-1:
+    host: dev-linux-1
+    user: hiro
+    jobs: 6
+    data_root: /mnt/dev
+    python: python3
+
+  dev-linux-2:
+    host: dev-linux-2
+    user: hiro
+    jobs: 3
+    data_root: /mnt/dev
+    python: python3
+
+project:
+  # Repo on the NFS share (clone once, all machines use it)
+  # TODO: clone repo to /Volumes/dev/git/open-normative-eeg/open-normative-eeg
+  repo_path: git/open-normative-eeg/open-normative-eeg
+  output_base: Data/EEG/norms_output
+
+  # Leave empty — dataset path is passed per-run via defaults.dataset
+  dataset_path: ""
+
+defaults:
+  dataset: lemon
+  condition: both
+  channels: 37
+  skip_connectivity: false
+  # Extra args appended to build_norms.py command
+  # e.g. "--source --save-psd --qc-dir /path/to/qc"
+  extra_args: ""
+
+# Python environment setup (used by 'distribute.py setup')
+env:
+  venv_dir: ~/.eeg-normative-env            # absolute path on each machine (~ expanded)
+  requirements: Data/EEG/eeg-env/requirements.txt  # relative to data_root (on NFS)
+  system_python: python3                     # used to create the venv
+
+# Dataset paths (used by the run command to resolve data_dir)
+# These are relative to data_root on each machine
+dataset_paths:
+  lemon: Data/EEG/EEG/LEMON/EEG_Raw_BIDS_ID
+  dortmund: Data/EEG/EEG/Dortmund

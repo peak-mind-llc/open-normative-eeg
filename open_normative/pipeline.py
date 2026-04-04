@@ -32,6 +32,7 @@ class MetricsResult:
     preprocessing: dict
     spectral: Optional[dict]
     connectivity: Optional[dict]
+    source: Optional[dict] = None
 
     def to_flat_dict(self) -> dict:
         """Flatten spectral band-power metrics into a single dict.
@@ -368,6 +369,18 @@ class MetricsResult:
                         result[pac_ch]["ThetaGamma"] = {}
                     result[pac_ch]["ThetaGamma"]["pac_mi"] = float(mi)
 
+        # Source localization metrics
+        if self.source is not None:
+            from open_normative.source import source_result_to_metrics
+            source_metrics = source_result_to_metrics(self.source)
+            for key, band_dict in source_metrics.items():
+                if key not in result:
+                    result[key] = {}
+                for band, metric_dict in band_dict.items():
+                    if band not in result[key]:
+                        result[key][band] = {}
+                    result[key][band].update(metric_dict)
+
         return result
 
 
@@ -376,23 +389,28 @@ def process_resting(
     condition: str,
     params: Optional[dict] = None,
     skip_connectivity: bool = False,
+    source: bool = False,
 ) -> MetricsResult:
     """Run the full resting-state EEG analysis pipeline.
 
     Orchestrates: copy raw → preprocess → spectral analysis →
-    (optional) connectivity analysis → MetricsResult.
+    (optional) connectivity analysis → (optional) source analysis →
+    MetricsResult.
 
     The caller's Raw object is never modified — we work on a copy.
 
     Args:
-        raw: MNE Raw object (19-channel, channel-standardized).
+        raw: MNE Raw object (channel-standardized).
         condition: Recording condition label, e.g. "eo" or "ec".
         params: Pipeline params dict. Defaults to PIPELINE_PARAMS.
         skip_connectivity: If True, skip connectivity analysis (faster,
             useful for large normative builds where connectivity is not needed).
+        source: If True, run source localization (sLORETA power + DICS
+            connectivity). Requires 19 or 37 channel data.
 
     Returns:
-        MetricsResult with preprocessing, spectral, and connectivity fields.
+        MetricsResult with preprocessing, spectral, connectivity, and
+        source fields.
     """
     if params is None:
         params = PIPELINE_PARAMS
@@ -418,6 +436,15 @@ def process_resting(
             processed_raw, params["connectivity"]
         )
 
+    # Source localization (optional).
+    source_result = None
+    if source:
+        from open_normative.source import analyze_source
+        n_ch = len(ch_names)
+        source_result = analyze_source(
+            processed_raw, spectral_result, params, n_channels=n_ch,
+        )
+
     return MetricsResult(
         condition=condition,
         preprocessing={
@@ -426,4 +453,5 @@ def process_resting(
         },
         spectral=spectral_result,
         connectivity=connectivity_result,
+        source=source_result,
     )

@@ -136,4 +136,9 @@ def test_channels_config():
     assert ch["target_montage"] == "standard_1020"
     assert len(ch["channels_19"]) == 19
     assert "Fp1" in ch["channels_19"]
+    assert len(ch["channels_37"]) == 37
+    assert "FC1" in ch["channels_37"]
+    assert "P1" in ch["channels_37"]
+    # 37ch should be a superset of 19ch
+    assert set(ch["channels_19"]).issubset(set(ch["channels_37"]))
     assert ch["name_mapping"]["T7"] == "T3"
