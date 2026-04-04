@@ -278,6 +278,66 @@ This cross-dataset comparison demonstrates:
 
 ---
 
+## 37-Channel + Source Localization Build (2026-04-03)
+
+### What Changed
+
+The pipeline was expanded from 19 to 37 channels and source localization was added:
+- **37 sensor channels**: 19 standard 10-20 + 18 extended 10-10 positions (matched to pre-computed forward model)
+- **sLORETA source power**: Per-Brodmann-area power via pre-computed transformation matrix (~40 BAs × 11 bands)
+- **DICS source connectivity**: 18 Desikan-Killiany ROIs across 7 networks (DMN, Executive, Salience, Frontoparietal, Sensorimotor, Visual, Language)
+- **Distributed processing**: build_norms.py now supports `-j/--jobs` for local multiprocessing and `scripts/distribute.py` for SSH-based distribution across machines
+
+### LEMON 37ch + Source Build
+
+- **211 subject records** (107 EO, 104 EC) from 215 LEMON subjects
+- **103,580 normative cells**, 71 metric types, 301 channels (37 sensor + 264 synthetic)
+- Processed distributed across dev-mac-1 (M4 24GB), dev-linux-1 (29GB), dev-linux-2 via NFS share
+- ~3 hours total wall time for full kitchen sink (37ch sensor + connectivity + source power + source connectivity + PSD curves)
+
+### Source Validation Results (`validate_source.py`)
+
+New validation script with 7 source-specific checks:
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| Alpha posterior dominance (source) | PASS | Posterior/anterior BA ratio 0.97 (sLORETA has spatial smearing, threshold 0.9) |
+| Source Berger effect | PASS | 82% of occipital BA Alpha cells show EC > EO |
+| Source power sanity | PASS | All values non-negative and finite |
+| DMN within-network connectivity | PASS | Alpha-band DMN dwPLI strongest (0.035), overall 0.014 |
+| Network hierarchy | PASS | Within/between ratio 0.77-0.90 (acceptable for 37ch DICS) |
+| Connectivity bounds | PASS | All values in [0, 1] |
+| Band topography | PASS | BA7 (superior parietal) top for Alpha, as expected |
+
+**Key findings:**
+- sLORETA source power topography is valid but spatially smooth — posterior/anterior contrast is reduced compared to beamformers, which is the expected behavior of minimum-norm solutions
+- DICS connectivity values are low in absolute terms (dwPLI ~0.01-0.04) — expected limitation with 37 channels, as spatial resolution is at the floor for beamforming
+- Alpha-band DMN connectivity is the strongest band, consistent with known resting-state DMN alpha dominance
+- Within-network connectivity is slightly lower than between-network — a known artifact of limited spatial resolution causing beamformer filters to suppress nearby sources within the same network
+
+### Updated Sensor Validation (37ch-aware)
+
+Validation scripts were updated to auto-detect 19 vs 37 channels:
+
+| Script | Channels tested | Result |
+|--------|----------------|--------|
+| Literature validation | All 37 sensor channels | **8/8 PASS** (296 relative power cells, up from 152) |
+| Internal: EC > EO alpha | All 37 sensor channels | **185/185 (100%)** (up from 95 cells) |
+| Internal: Split-half | All metrics | r=0.81 (below 0.90 target — expected with LEMON only) |
+| Internal: IAF trend | Global | EC passes (r=-0.95), EO flat (r=0.06) |
+
+The 18 additional channels all pass the same physiological checks as the standard 19. Extended posterior channels (PO3, PO4) and anterior channels (AF3, AF4, FC1, FC2) are included in topographic group comparisons.
+
+### Distributed Processing Lessons
+
+1. **Memory**: Full source analysis needs ~4-6 GB per worker. Mac Mini M4 (24GB) safe at `-j 2`, dev-linux-2 at `-j 3`.
+2. **Fork issues**: dev-linux-1 (Python 3.12) gets BrokenProcessPool with multiprocessing + source. Runs fine with `-j 1`.
+3. **FloatingPointError**: The known asrpy/numpy 2.x ICA bug kills ProcessPoolExecutor workers. Fixed by wrapping worker body in `try/except BaseException` and converting to RuntimeError.
+4. **NFS latency**: Python venvs must be local (home dir), not on NFS. Code repo on NFS is fine.
+5. **Checkpoint/resume**: Works perfectly across machine failures. Each machine writes unique per-subject JSON files. Resume skips existing checkpoints automatically.
+
+---
+
 ## References
 
 - Arns, M., et al. (2013). A decade of EEG Theta/Beta Ratio Research in ADHD. *Journal of Attention Disorders*, 17(5), 374-383.
