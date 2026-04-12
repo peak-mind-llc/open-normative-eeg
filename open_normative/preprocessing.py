@@ -202,18 +202,55 @@ def _resolve_ica_method(preferred: str) -> tuple[str, dict]:
 def run_ica(raw: mne.io.Raw, params: dict) -> dict:
     """Run ICA decomposition and ICLabel auto-classification.
 
+    n_components handling: by default uses ``min(data_rank, n_channels - 1)``
+    to force a full-rank decomposition. This matches Phase B's
+    ``workflow_resting.m`` behavior and prevents rank collapse on
+    drifty data.
+
+    The old default of ``n_components=0.999`` (keep enough PCs to explain
+    99.9% of variance) collapses badly on heavily-drifting recordings —
+    when one or two low-frequency artifacts dominate variance, ICA ends
+    up fitting only 5–10 components out of 19, which leaves too few
+    degrees of freedom for clean brain/artifact separation. Forcing
+    rank-minus-one gives ICLabel more components to classify correctly.
+
+    Callers can override ``n_components`` in params to force a specific
+    count if needed (for research use).
+
     Returns:
         Dict with keys: ica, rejected_components, labels.
     """
     preferred_method = params.get("method", "picard")
     extended = params.get("extended", True)
-    n_components = params.get("n_components", 0.999)
+    # Use rank-based default; falls through to variance-fraction only if
+    # caller explicitly asks for it (float <1.0 or "0.99" style string).
+    n_components_param = params.get("n_components", None)
     max_iter = params.get("max_iter", 500)
     random_state = params.get("random_state", 42)
 
     method, fit_params = _resolve_ica_method(preferred_method)
     if preferred_method == "infomax" and method == "infomax":
         fit_params = {"extended": extended}
+
+    raw_fit = _make_ica_copy(raw, params)
+    if raw_fit is None:
+        raw_fit = raw
+
+    # Compute data rank on the ICA fit copy (post filtering, pre reference-
+    # removed drop). matrix_rank is more robust than eigenvalue counting
+    # for near-rank-deficient data.
+    try:
+        data_for_rank = raw_fit.get_data()
+        data_rank = int(np.linalg.matrix_rank(data_for_rank))
+    except Exception:
+        data_rank = raw_fit.info["nchan"]
+
+    # Default: full rank minus one (reference-removed rank).
+    # If caller explicitly passes a float < 1.0 or an int, honor that.
+    if n_components_param is None:
+        n_components = min(data_rank, raw_fit.info["nchan"] - 1)
+    else:
+        n_components = n_components_param
 
     ica = mne.preprocessing.ICA(
         n_components=n_components,
@@ -223,10 +260,6 @@ def run_ica(raw: mne.io.Raw, params: dict) -> dict:
         fit_params=fit_params,
         verbose=False,
     )
-
-    raw_fit = _make_ica_copy(raw, params)
-    if raw_fit is None:
-        raw_fit = raw
 
     try:
         ica.fit(raw_fit, verbose=False)
@@ -445,31 +478,59 @@ def reject_bad_windows_post_asr(raw: mne.io.Raw, params: dict) -> dict:
 
 
 def preprocess(raw: mne.io.Raw, params: dict) -> dict:
-    """Run the full preprocessing pipeline.
+    """Run the canonical preprocessing pipeline (Neurofield-style).
 
-    Pipeline order (matches EEGlab ``clean_artifacts`` + reference
-    convention: cleaning runs on the original reference, then re-reference
-    is applied AFTER cleaning):
+    Pipeline order:
 
-        1. Resample (optional, target 256 Hz per PIPELINE_PARAMS)
+        1. Resample (optional, off by default)
         2. Bandpass + notch filter
         3. Bad channel detection (variance + pyprep RANSAC)
-        4. Line noise channel detection (NEW — catches channels dominated
-           by power-line contamination that variance / RANSAC may miss)
+        4. Line noise channel detection (OPTIONAL — disabled by default)
         5. Interpolate bad channels via spherical splines
-        6. ASR burst reconstruction (asrpy)
-        7. Post-ASR window rejection (NEW — marks windows where residual
-           std exceeds 5× the recording-wide median as bad annotations;
-           downstream analyses skip them via reject_by_annotation)
+        6. ASR burst reconstruction (OPTIONAL — disabled by default)
+        7. Post-ASR window rejection (OPTIONAL — disabled by default)
         8. Average reference
         9. ICA decomposition + ICLabel classification + auto-reject
 
-    Note on reference ordering: CAP-01 §3 documents reference (Step 3)
-    BEFORE ASR (Step 4), but this contradicts EEGlab's ``clean_artifacts``
-    convention and what Phase B ``workflow_resting.m`` actually does (ASR
-    first, then ``pop_reref``). The CAP-01 doc is wrong and needs a
-    correction pass; the code here matches the Phase B reference pipeline
-    and the EEGlab canonical order.
+    Design note — why ASR / line noise / window rejection are off by default:
+
+    This module originally wrapped EEGlab's ``clean_artifacts`` chain one
+    step at a time, and ASR was in the main path. Empirical comparison
+    against Neurofield's clinical pipeline (Phase D Part 1, April 2026)
+    showed that:
+
+    1. Neurofield's production clinical pipeline does NOT use ASR. It
+       runs filter → bad channels → reference → AMICA → aggressive
+       component rejection. No burst reconstruction, no window rejection.
+
+    2. On three tested ERP cases (tc038, tc041, tc043), Neurofield's
+       final cleaned output landed within 10% of EEGlab's clean_artifacts
+       output (6.8/6.0, 6.2/6.5, 4.0/4.6 µV). Both pipelines arrive at
+       essentially the same target via different paths.
+
+    3. The bulk of variance reduction in both pipelines happens at ICA
+       component rejection, not at ASR. For tc038 the BFCAR → Clean step
+       (purely ICA rejection) drops std from 37.5 → 6.8 µV, a 5.5×
+       reduction from component removal alone.
+
+    4. ASR has clinical concerns that matter for a tool clinicians use
+       to interpret signals: it reconstructs "bursts" as statistical
+       residuals of a clean-data model, which means it can synthesize
+       away genuine abnormalities (epileptic spikes, seizure onsets,
+       movement-related high-amplitude events) without the clinician
+       ever seeing them. For clean research data this is fine; for
+       clinical interpretation it's risky. Neurofield's choice to skip
+       ASR is clinically defensible.
+
+    Conclusion: default to Neurofield-style cleaning. The ASR, line
+    noise, and window rejection functions remain in this module as
+    opt-in advanced features for research use, but are NOT called from
+    ``preprocess()`` unless explicitly enabled in the params dict.
+
+    Note on reference ordering: kept as reference AFTER cleaning (matching
+    EEGlab ``clean_artifacts`` and Phase B ``workflow_resting.m``). CAP-01
+    §3 documents the opposite order but the doc is wrong and needs a
+    correction pass.
 
     Args:
         raw: MNE Raw object (already channel-standardized to 19ch).
@@ -483,6 +544,7 @@ def preprocess(raw: mne.io.Raw, params: dict) -> dict:
     apply_filters(raw, params["filter"])
 
     bads_main = detect_bad_channels(raw, params["bad_channels"])
+    # Line noise detection is advanced/opt-in; only runs if enabled
     bads_line = detect_line_noise_channels(raw, params.get("line_noise", {}))
     bads_combined = list(bads_main)
     for ch in bads_line:
@@ -491,10 +553,17 @@ def preprocess(raw: mne.io.Raw, params: dict) -> dict:
     raw.info["bads"] = bads_combined
     interpolate_bad_channels(raw)
 
-    apply_asr(raw, params.get("asr", {}))
+    # ASR is advanced/opt-in; only runs if enabled in params.
+    # Neurofield-style (the canonical default) skips this step.
+    asr_params = params.get("asr", {}) or {}
+    if asr_params.get("enabled", False):
+        apply_asr(raw, asr_params)
+
+    # Window rejection is advanced/opt-in; only runs if enabled
     window_info = reject_bad_windows_post_asr(
         raw, params.get("window_rejection", {})
     )
+
     apply_reference(raw, params.get("reference", "average"))
     ica_result = run_ica(raw, params["ica"])
 

@@ -30,31 +30,59 @@ PIPELINE_PARAMS = {
             "flat_threshold_factor": 0.01,
             "noisy_threshold_factor": 10.0,
         },
+        # ASR (burst reconstruction) is DISABLED by default — the canonical
+        # pipeline is Neurofield-style (filter → bad ch → reference → ICA)
+        # with no ASR. ASR remains available as an opt-in advanced feature
+        # for research use; set asr.enabled=True to re-enable. See the
+        # design note in open_normative.preprocessing.preprocess().
         "asr": {
+            "enabled": False,
             "cutoff": 20,
             "window_length": 0.5,
         },
+        # Line noise detection is DISABLED by default — pyprep RANSAC
+        # already catches most line-noise-dominated channels via the
+        # correlation check. This detector is available for cases where
+        # line noise is a primary concern and RANSAC alone is insufficient.
         "line_noise": {
-            "enabled": True,
-            "line_freq": 60.0,   # US power line; set to 50.0 for EU
-            "max_ratio": 0.4,    # flag channels with >40% power in the line band
-            "bandwidth": 2.0,    # ± Hz around line_freq
+            "enabled": False,
+            "line_freq": 60.0,
+            "max_ratio": 0.4,
+            "bandwidth": 2.0,
         },
+        # Window rejection is DISABLED by default. Neurofield-style
+        # cleaning does not drop windows; any residual artifact after
+        # ICA rejection is handled clinically via manual artifact
+        # annotation in the DataPrep workflow (CAP-01 §6).
         "window_rejection": {
-            "enabled": True,
-            "window_length": 0.5,           # seconds
-            "threshold_multiplier": 5.0,    # std multiplier above recording median
+            "enabled": False,
+            "window_length": 0.5,
+            "threshold_multiplier": 5.0,
         },
         "ica": {
             "method": "picard",
             "extended": True,
-            "n_components": 0.999,
+            # n_components: None → auto-compute as min(data_rank, nbchan-1).
+            # This avoids rank collapse on drifty data (the old 0.999
+            # variance-fraction default would fit only 5-10 components
+            # when low-frequency drift dominated variance). Callers who
+            # want explicit control can still pass an int or float <1.0.
+            "n_components": None,
             "max_iter": 500,
             "random_state": 42,
             "two_stage_filter": True,
             "ica_highpass": 1.0,
+            # ICLabel auto-decision thresholds:
+            #   brain >= brain_threshold         → auto-keep
+            #   brain < brain_threshold          → review
+            #   non-brain >= review_threshold    → auto-reject
+            #   non-brain < review_threshold     → review
+            # Bumped review_threshold from 0.50 → 0.60 (April 2026) to
+            # be more conservative on borderline artifact calls — the
+            # clinician still sees review-flagged components and can
+            # confirm.
             "brain_threshold": 0.80,
-            "review_threshold": 0.50,
+            "review_threshold": 0.60,
         },
         "reference": "average",
     },
