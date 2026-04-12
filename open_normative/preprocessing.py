@@ -120,7 +120,15 @@ def _asr_mem_splits(raw, max_chunk_bytes=500_000_000):
 
 
 def apply_asr(raw: mne.io.Raw, params: dict) -> mne.io.Raw:
-    """Apply Artifact Subspace Reconstruction to clean transient artifacts."""
+    """Apply Artifact Subspace Reconstruction to clean transient artifacts.
+
+    Modifies ``raw`` in place and also returns it. Historically this
+    function rebound a local ``raw`` variable to ``asr.transform()``'s
+    return value and returned it; callers that ignored the return value
+    ended up with unchanged data (a silent no-op for ASR). This version
+    copies the transformed data back into the caller's ``raw`` object so
+    ``apply_asr(raw, ...)`` and ``raw = apply_asr(raw, ...)`` both work.
+    """
     try:
         from asrpy import ASR
     except ImportError:
@@ -129,10 +137,36 @@ def apply_asr(raw: mne.io.Raw, params: dict) -> mne.io.Raw:
 
     _patch_asrpy()
     cutoff = params.get("cutoff", 20)
-    asr = ASR(sfreq=raw.info["sfreq"], cutoff=cutoff)
-    asr.fit(raw)
-    splits = _asr_mem_splits(raw)
-    raw = asr.transform(raw, mem_splits=splits)
+    data_before = raw.get_data().copy()
+    try:
+        with np.errstate(all="warn"):
+            asr = ASR(sfreq=raw.info["sfreq"], cutoff=cutoff)
+            asr.fit(raw)
+            splits = _asr_mem_splits(raw)
+            raw_transformed = asr.transform(raw, mem_splits=splits)
+    except Exception as exc:
+        warnings.warn(f"ASR failed ({type(exc).__name__}: {exc}); skipping")
+        return raw
+
+    # ASR should not change sample count — but guard against it.
+    if raw_transformed.n_times != raw.n_times:
+        warnings.warn(
+            f"ASR returned a Raw with {raw_transformed.n_times} samples "
+            f"(expected {raw.n_times}); skipping ASR update"
+        )
+        return raw
+
+    new_data = raw_transformed.get_data()
+    if not np.all(np.isfinite(new_data)):
+        n_bad = int(np.sum(~np.isfinite(new_data)))
+        warnings.warn(
+            f"ASR produced {n_bad} non-finite values — reverting to pre-ASR data"
+        )
+        raw._data[:] = data_before
+        return raw
+
+    # Copy the transformed data back into the caller's raw in-place.
+    raw._data[:] = new_data
     return raw
 
 
@@ -196,9 +230,9 @@ def run_ica(raw: mne.io.Raw, params: dict) -> dict:
 
     try:
         ica.fit(raw_fit, verbose=False)
-    except ImportError as exc:
+    except (ImportError, FloatingPointError, np.linalg.LinAlgError) as exc:
         warnings.warn(
-            f"ICA fitting skipped — required package not available: {exc}"
+            f"ICA fitting skipped — {type(exc).__name__}: {exc}"
         )
         return {"ica": None, "rejected_components": [], "labels": None}
 
@@ -252,27 +286,222 @@ def apply_reference(raw: mne.io.Raw, reference: str) -> mne.io.Raw:
     return raw
 
 
+def detect_line_noise_channels(raw: mne.io.Raw, params: dict) -> list[str]:
+    """Detect channels dominated by line noise.
+
+    Missing step in the original preprocessing — EEGlab's `clean_artifacts`
+    runs a `LineNoiseCriterion` pass that flags channels with excessive
+    power concentrated in the line-noise frequency band. This function is
+    the Python equivalent: compute per-channel PSD, measure the fraction
+    of total power in a ±`bandwidth` Hz window around `line_freq`, flag
+    channels where that fraction exceeds `max_ratio`.
+
+    Args:
+        raw: MNE Raw object (not modified).
+        params: Dict with keys:
+            enabled (bool) — skip this step if False
+            line_freq (float) — 60.0 US, 50.0 EU
+            max_ratio (float) — fraction threshold, default 0.4
+            bandwidth (float) — ± Hz around line_freq, default 2.0
+
+    Returns:
+        List of bad channel names (possibly empty).
+    """
+    if not params.get("enabled", False):
+        return []
+
+    line_freq = params.get("line_freq", 60.0)
+    max_ratio = params.get("max_ratio", 0.4)
+    bandwidth = params.get("bandwidth", 2.0)
+
+    # Skip if Nyquist can't fit the line band
+    nyq = raw.info["sfreq"] / 2.0
+    if line_freq + bandwidth >= nyq:
+        return []
+
+    fmax = min(line_freq + 10.0, nyq - 1.0)
+    n_fft = int(min(raw.info["sfreq"] * 2, raw.n_times))
+    try:
+        spec = raw.compute_psd(
+            method="welch", fmin=1.0, fmax=fmax, n_fft=n_fft, verbose=False,
+        )
+    except Exception as exc:
+        warnings.warn(
+            f"detect_line_noise_channels: PSD computation failed ({exc}); "
+            "skipping line-noise detection"
+        )
+        return []
+
+    psd = spec.get_data()  # (n_channels, n_freqs)
+    freqs = spec.freqs
+
+    line_band = (freqs >= line_freq - bandwidth) & (freqs <= line_freq + bandwidth)
+    if not line_band.any():
+        return []
+
+    # Integrate power in the line band vs the whole spectrum
+    line_power = np.trapezoid(psd[:, line_band], freqs[line_band], axis=1)
+    total_power = np.trapezoid(psd, freqs, axis=1)
+    total_power = np.where(total_power < 1e-24, 1e-24, total_power)
+    ratios = line_power / total_power
+
+    bad = [raw.ch_names[i] for i, r in enumerate(ratios) if r > max_ratio]
+    return bad
+
+
+def reject_bad_windows_post_asr(raw: mne.io.Raw, params: dict) -> dict:
+    """Mark windows with excessive residual amplitude as bad annotations.
+
+    Intended to run AFTER ASR. Computes per-window std (across all channels
+    and samples in the window); windows where the std exceeds
+    `threshold_multiplier` × the recording-wide median std are flagged as
+    bad. Adjacent bad windows are merged. The flagged windows are written
+    as MNE annotations with description ``BAD_post_asr_window`` so that
+    downstream analyses (spectral / connectivity / ERP) skip them via
+    standard ``reject_by_annotation`` semantics.
+
+    This is the Python equivalent of EEGlab `clean_artifacts`'
+    `WindowCriterion` — the step asrpy alone doesn't implement.
+
+    Args:
+        raw: MNE Raw object, modified in place (annotations added).
+        params: Dict with keys:
+            enabled (bool) — skip if False
+            window_length (float) — window in seconds, default 0.5
+            threshold_multiplier (float) — std multiplier above median, default 5.0
+
+    Returns:
+        Dict with {n_bad_windows, total_windows, bad_seconds, threshold_std}.
+    """
+    info_out = {
+        "n_bad_windows": 0,
+        "total_windows": 0,
+        "bad_seconds": 0.0,
+        "threshold_std": 0.0,
+    }
+    if not params.get("enabled", False):
+        return info_out
+
+    window_sec = params.get("window_length", 0.5)
+    threshold_mult = params.get("threshold_multiplier", 5.0)
+
+    sfreq = raw.info["sfreq"]
+    window_samples = max(1, int(window_sec * sfreq))
+
+    data = raw.get_data()
+    n_samples = data.shape[1]
+    n_windows = n_samples // window_samples
+    if n_windows < 4:
+        return info_out
+
+    stds = np.empty(n_windows)
+    for i in range(n_windows):
+        s = i * window_samples
+        e = s + window_samples
+        stds[i] = data[:, s:e].std()
+
+    median_std = float(np.median(stds))
+    if median_std <= 0:
+        return info_out
+    threshold = median_std * threshold_mult
+
+    bad_mask = stds > threshold
+    info_out["total_windows"] = int(n_windows)
+    info_out["n_bad_windows"] = int(bad_mask.sum())
+    info_out["bad_seconds"] = float(bad_mask.sum() * window_sec)
+    info_out["threshold_std"] = float(threshold)
+
+    if not bad_mask.any():
+        return info_out
+
+    # Merge adjacent bad windows into continuous segments
+    onsets = []
+    durations = []
+    descriptions = []
+    i = 0
+    while i < n_windows:
+        if bad_mask[i]:
+            j = i
+            while j < n_windows and bad_mask[j]:
+                j += 1
+            onset_sec = (i * window_samples) / sfreq
+            duration_sec = ((j - i) * window_samples) / sfreq
+            onsets.append(onset_sec)
+            durations.append(duration_sec)
+            descriptions.append("BAD_post_asr_window")
+            i = j
+        else:
+            i += 1
+
+    new_annots = mne.Annotations(
+        onsets, durations, descriptions, orig_time=raw.info["meas_date"],
+    )
+    if raw.annotations is not None and len(raw.annotations) > 0:
+        raw.set_annotations(raw.annotations + new_annots)
+    else:
+        raw.set_annotations(new_annots)
+
+    return info_out
+
+
 def preprocess(raw: mne.io.Raw, params: dict) -> dict:
     """Run the full preprocessing pipeline.
+
+    Pipeline order (matches EEGlab ``clean_artifacts`` + reference
+    convention: cleaning runs on the original reference, then re-reference
+    is applied AFTER cleaning):
+
+        1. Resample (optional, target 256 Hz per PIPELINE_PARAMS)
+        2. Bandpass + notch filter
+        3. Bad channel detection (variance + pyprep RANSAC)
+        4. Line noise channel detection (NEW — catches channels dominated
+           by power-line contamination that variance / RANSAC may miss)
+        5. Interpolate bad channels via spherical splines
+        6. ASR burst reconstruction (asrpy)
+        7. Post-ASR window rejection (NEW — marks windows where residual
+           std exceeds 5× the recording-wide median as bad annotations;
+           downstream analyses skip them via reject_by_annotation)
+        8. Average reference
+        9. ICA decomposition + ICLabel classification + auto-reject
+
+    Note on reference ordering: CAP-01 §3 documents reference (Step 3)
+    BEFORE ASR (Step 4), but this contradicts EEGlab's ``clean_artifacts``
+    convention and what Phase B ``workflow_resting.m`` actually does (ASR
+    first, then ``pop_reref``). The CAP-01 doc is wrong and needs a
+    correction pass; the code here matches the Phase B reference pipeline
+    and the EEGlab canonical order.
 
     Args:
         raw: MNE Raw object (already channel-standardized to 19ch).
         params: The 'preprocessing' section of PIPELINE_PARAMS.
 
     Returns:
-        Dict with keys: raw, bad_channels, ica.
+        Dict with keys: raw, bad_channels, bad_by_line_noise,
+        window_rejection, ica.
     """
     resample(raw, params.get("resample", {}))
     apply_filters(raw, params["filter"])
-    bads = detect_bad_channels(raw, params["bad_channels"])
-    raw.info["bads"] = bads
+
+    bads_main = detect_bad_channels(raw, params["bad_channels"])
+    bads_line = detect_line_noise_channels(raw, params.get("line_noise", {}))
+    bads_combined = list(bads_main)
+    for ch in bads_line:
+        if ch not in bads_combined:
+            bads_combined.append(ch)
+    raw.info["bads"] = bads_combined
     interpolate_bad_channels(raw)
+
     apply_asr(raw, params.get("asr", {}))
+    window_info = reject_bad_windows_post_asr(
+        raw, params.get("window_rejection", {})
+    )
     apply_reference(raw, params.get("reference", "average"))
     ica_result = run_ica(raw, params["ica"])
 
     return {
         "raw": raw,
-        "bad_channels": bads,
+        "bad_channels": bads_combined,
+        "bad_by_line_noise": bads_line,
+        "window_rejection": window_info,
         "ica": ica_result,
     }

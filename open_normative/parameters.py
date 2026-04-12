@@ -34,6 +34,17 @@ PIPELINE_PARAMS = {
             "cutoff": 20,
             "window_length": 0.5,
         },
+        "line_noise": {
+            "enabled": True,
+            "line_freq": 60.0,   # US power line; set to 50.0 for EU
+            "max_ratio": 0.4,    # flag channels with >40% power in the line band
+            "bandwidth": 2.0,    # ± Hz around line_freq
+        },
+        "window_rejection": {
+            "enabled": True,
+            "window_length": 0.5,           # seconds
+            "threshold_multiplier": 5.0,    # std multiplier above recording median
+        },
         "ica": {
             "method": "picard",
             "extended": True,
