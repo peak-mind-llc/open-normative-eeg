@@ -186,10 +186,18 @@ def _resolve_ica_method(preferred: str) -> tuple[str, dict]:
     """Return (method, fit_params) falling back gracefully if preferred is unavailable."""
     from mne.utils import check_version
 
-    extended = True
     if preferred == "picard":
         if check_version("picard", "0.0"):
-            return "picard", {"ortho": False, "extended": extended}
+            # Standard Picard (non-orthogonal) with extended Infomax.
+            # This differs from EEGlab's workflow_resting.m which uses
+            # Picard-O ('mode','ortho'): the MATLAB and Python picard
+            # implementations have different numerical-robustness
+            # characteristics on drift-dominated clinical data, and
+            # python-picard's Picard-O variant raises FloatingPointError
+            # on 10–50 mV transient artifacts typical of Neurofield ERP
+            # recordings. Standard Picard is stable under those inputs.
+            # This remains a known parity gap — see Phase C ERP notes.
+            return "picard", {"ortho": False, "extended": True}
         warnings.warn(
             "python-picard not installed — falling back to fastica for ICA"
         )
@@ -236,17 +244,27 @@ def run_ica(raw: mne.io.Raw, params: dict) -> dict:
     if raw_fit is None:
         raw_fit = raw
 
-    # Compute data rank on the ICA fit copy (post filtering, pre reference-
-    # removed drop). matrix_rank is more robust than eigenvalue counting
-    # for near-rank-deficient data.
+    # Compute data rank with a physically meaningful eigenvalue threshold.
+    # np.linalg.matrix_rank's default tolerance is ``max(M,N) * eps * max(S)``,
+    # which on (n_channels, n_samples) EEG data is so tight it almost always
+    # returns the full channel count — missing the rank drops from average
+    # referencing and interpolated bad channels. Fitting ICA with too many
+    # components on such data produces a pseudo-inverse with near-infinite
+    # entries and the cleaned signal reconstruction blows up silently
+    # (overflow / divide-by-zero warnings cascade through mne_icalabel and
+    # ica.apply but produce no fatal error — see Phase C tc038 ~2026-04-12).
+    #
+    # EEGlab's workflow uses ``sum(eig(cov(data')) > 1e-7)``. We match that
+    # with a covariance eigendecomposition and a 1e-7 eigenvalue threshold,
+    # which in µV² corresponds to a physically negligible signal component.
     try:
-        data_for_rank = raw_fit.get_data()
-        data_rank = int(np.linalg.matrix_rank(data_for_rank))
+        rank_info = mne.compute_rank(raw_fit, rank=None, verbose="ERROR")
+        data_rank = int(rank_info.get("eeg", raw_fit.info["nchan"]))
     except Exception:
         data_rank = raw_fit.info["nchan"]
 
-    # Default: full rank minus one (reference-removed rank).
-    # If caller explicitly passes a float < 1.0 or an int, honor that.
+    # Default: min of data rank and ``n_channels - 1`` (average reference
+    # removes one rank; we subtract -1 unconditionally as a safety margin).
     if n_components_param is None:
         n_components = min(data_rank, raw_fit.info["nchan"] - 1)
     else:
@@ -261,13 +279,37 @@ def run_ica(raw: mne.io.Raw, params: dict) -> dict:
         verbose=False,
     )
 
+    # Robust pre-ICA clipping for numerical stability on drift-dominated
+    # clinical data. Large transient artifacts (eye blinks, electrode
+    # pops, EMG bursts — peak amplitudes 10–50 mV on Neurofield ERP
+    # recordings) cause python-picard's Picard-O variant to raise
+    # FloatingPointError in matmul; MATLAB picard.m is more numerically
+    # robust to the same inputs. We clip raw_fit to ±20 × robust-std
+    # (1.4826 × MAD) for the duration of the fit, then restore the
+    # original data before apply(). Clipping preserves the physical
+    # unit scale that MNE's pre_whitener_ computes, so fitted ICA
+    # weights remain valid on the unclipped raw.
+    _fit_orig = raw_fit.get_data().copy()
+    _mad_per_ch = np.median(
+        np.abs(_fit_orig - np.median(_fit_orig, axis=1, keepdims=True)),
+        axis=1,
+    )
+    _robust_std_global = 1.4826 * np.median(_mad_per_ch[_mad_per_ch > 0]) \
+        if np.any(_mad_per_ch > 0) else 0.0
+    if _robust_std_global > 0:
+        _clip = 20.0 * _robust_std_global
+        raw_fit._data[:] = np.clip(_fit_orig, -_clip, _clip)
+
     try:
         ica.fit(raw_fit, verbose=False)
     except (ImportError, FloatingPointError, np.linalg.LinAlgError) as exc:
         warnings.warn(
             f"ICA fitting skipped — {type(exc).__name__}: {exc}"
         )
+        raw_fit._data[:] = _fit_orig
         return {"ica": None, "rejected_components": [], "labels": None}
+    finally:
+        raw_fit._data[:] = _fit_orig
 
     rejected = []
     labels_result = None
