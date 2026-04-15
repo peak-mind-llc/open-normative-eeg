@@ -71,6 +71,7 @@ DEFAULT_CONFIG = {
         "condition": "both",
         "channels": 19,
         "skip_connectivity": False,
+        "ba_connectivity": False,
         "extra_args": "",
     },
 }
@@ -112,6 +113,7 @@ def load_config(config_path: str) -> dict:
     cfg["defaults"].setdefault("condition", "both")
     cfg["defaults"].setdefault("channels", 19)
     cfg["defaults"].setdefault("skip_connectivity", False)
+    cfg["defaults"].setdefault("ba_connectivity", False)
     cfg["defaults"].setdefault("extra_args", "")
 
     return cfg
@@ -343,6 +345,8 @@ def _build_command(
 
     if defaults.get("skip_connectivity"):
         parts.append("--skip-connectivity")
+    if defaults.get("ba_connectivity"):
+        parts.append("--ba-connectivity")
     if defaults.get("save_psd"):
         parts.append("--save-psd")
 

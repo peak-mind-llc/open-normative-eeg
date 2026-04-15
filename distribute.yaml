@@ -39,7 +39,7 @@ defaults:
   channels: 37
   skip_connectivity: false
   save_psd: true
-  extra_args: "--source"
+  extra_args: "--source --ba-connectivity --dk-connectivity"
 
 # Python environment setup (used by 'distribute.py setup')
 env:
