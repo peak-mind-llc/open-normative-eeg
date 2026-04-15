@@ -22,13 +22,13 @@ def test_preprocessing_ica_params():
     ica = PIPELINE_PARAMS["preprocessing"]["ica"]
     assert ica["method"] == "picard"
     assert ica["extended"] is True
-    assert ica["n_components"] == 0.999
+    assert ica["n_components"] is None
     assert ica["max_iter"] == 500
     assert ica["random_state"] == 42
     assert ica["two_stage_filter"] is True
     assert ica["ica_highpass"] == 1.0
     assert ica["brain_threshold"] == 0.80
-    assert ica["review_threshold"] == 0.50
+    assert ica["review_threshold"] == 0.60
 
 
 def test_preprocessing_asr_params():
