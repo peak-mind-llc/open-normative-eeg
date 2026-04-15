@@ -226,6 +226,9 @@ def build_normative(
                         isinstance(value, float) and np.isnan(value)
                     ):
                         continue
+                    # Skip non-numeric metric values (e.g. metadata strings).
+                    if not isinstance(value, (int, float)):
+                        continue
                     key = (bin_label, cond, channel, band, metric_name)
                     if key not in accumulator:
                         accumulator[key] = []

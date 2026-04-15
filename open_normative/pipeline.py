@@ -319,6 +319,24 @@ class MetricsResult:
                         val = float(values[i])
                         result[ch][band][metric_name] = val if val == val else None
 
+            # Electrode-pair connectivity (full pairwise matrices)
+            elec_matrices = elec_conn.get("matrices", {})
+            if elec_matrices and conn_ch_names:
+                for method, band_data in elec_matrices.items():
+                    for band, matrix in band_data.items():
+                        if matrix is None:
+                            continue
+                        n_ch = len(conn_ch_names)
+                        for i in range(n_ch):
+                            for j in range(i + 1, n_ch):
+                                pair_key = f"_pair_{conn_ch_names[i]}_{conn_ch_names[j]}"
+                                if pair_key not in result:
+                                    result[pair_key] = {}
+                                if band not in result[pair_key]:
+                                    result[pair_key][band] = {}
+                                val = float(matrix[i, j])
+                                result[pair_key][band][method] = val if val == val else None
+
             # Graph metrics per band (stored under a synthetic "graph" channel)
             graph_metrics = self.connectivity.get("graph_metrics", {})
             if graph_metrics:
@@ -390,6 +408,9 @@ def process_resting(
     params: Optional[dict] = None,
     skip_connectivity: bool = False,
     source: bool = False,
+    ba_connectivity: bool = False,
+    dk_connectivity: bool = False,
+    dk_corrected_power: bool = False,
 ) -> MetricsResult:
     """Run the full resting-state EEG analysis pipeline.
 
@@ -407,6 +428,8 @@ def process_resting(
             useful for large normative builds where connectivity is not needed).
         source: If True, run source localization (sLORETA power + DICS
             connectivity). Requires 19 or 37 channel data.
+        ba_connectivity: If True, also compute BA-to-BA connectivity
+            (requires source=True).
 
     Returns:
         MetricsResult with preprocessing, spectral, connectivity, and
@@ -443,6 +466,9 @@ def process_resting(
         n_ch = len(ch_names)
         source_result = analyze_source(
             processed_raw, spectral_result, params, n_channels=n_ch,
+            ba_connectivity=ba_connectivity,
+            dk_connectivity=dk_connectivity,
+            dk_corrected_power=dk_corrected_power,
         )
 
     return MetricsResult(
