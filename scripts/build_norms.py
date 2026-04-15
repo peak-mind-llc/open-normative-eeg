@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from open_normative.datasets import DATASETS
-from open_normative.io import write_norms_csv, write_norms_json, write_subjects_csv
+from open_normative.io import write_norms_csv, write_norms_json, write_norms_npz, write_subjects_csv
 from open_normative.normative import build_normative
 from open_normative.parameters import PIPELINE_PARAMS
 from open_normative.pipeline import process_resting
@@ -47,6 +47,9 @@ def _process_one_subject(
     params: dict | None,
     skip_connectivity: bool,
     source: bool = False,
+    ba_connectivity: bool = False,
+    dk_connectivity: bool = False,
+    dk_corrected_power: bool = False,
     marker_condition: str | None = None,
 ) -> dict:
     """Worker function for parallel subject processing.
@@ -61,7 +64,10 @@ def _process_one_subject(
     """
     try:
         import mne
+        import numpy as np
         from open_normative.channels import pick_standard_channels
+
+        np.seterr(all="warn")
 
         filepath = Path(filepath)
         ext = filepath.suffix.lower()
@@ -97,6 +103,9 @@ def _process_one_subject(
             params=params,
             skip_connectivity=skip_connectivity,
             source=source,
+            ba_connectivity=ba_connectivity,
+            dk_connectivity=dk_connectivity,
+            dk_corrected_power=dk_corrected_power,
         )
 
         return {
@@ -202,8 +211,13 @@ def load_checkpoints(subjects_dir: Path) -> dict[str, dict]:
         return checkpoints
     for fpath in subjects_dir.glob("*.json"):
         key = fpath.stem  # e.g., "sub-010002_eo"
-        with open(fpath) as f:
-            checkpoints[key] = json.load(f)
+        try:
+            with open(fpath) as f:
+                checkpoints[key] = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logging.getLogger(__name__).warning(
+                f"Skipping corrupt checkpoint {fpath.name}: {exc}"
+            )
     return checkpoints
 
 
@@ -457,6 +471,24 @@ def main():
              "Adds ~30-60s per subject. Works with both 19 and 37 channels.",
     )
     parser.add_argument(
+        "--ba-connectivity",
+        action="store_true",
+        help="Compute Brodmann Area-to-BA connectivity (requires --source). "
+             "Adds ~30 BA-pair metrics per method per band.",
+    )
+    parser.add_argument(
+        "--dk-connectivity",
+        action="store_true",
+        help="Compute individual DK parcel-to-parcel connectivity (requires --source). "
+             "Adds all 68 DK parcels (2,278 pairs) per method per band.",
+    )
+    parser.add_argument(
+        "--dk-corrected-power",
+        action="store_true",
+        help="(deprecated, no-op) DK corrected power is now always computed "
+             "when --dk-connectivity or --ba-connectivity is enabled.",
+    )
+    parser.add_argument(
         "--subject-range",
         type=str,
         default=None,
@@ -466,6 +498,13 @@ def main():
     )
     args = parser.parse_args()
 
+
+    # --ba-connectivity / --dk-connectivity imply --source
+    if (args.ba_connectivity or args.dk_connectivity) and not args.source:
+        logging.getLogger(__name__).warning(
+            "--ba-connectivity/--dk-connectivity requires --source; enabling --source"
+        )
+        args.source = True
     # ── Merge mode ──────────────────────────────────────────────────────
     if args.merge:
         if not args.merge_dir:
@@ -485,8 +524,12 @@ def main():
                 continue
             count = 0
             for fpath in sorted(merge_path.glob("*.json")):
-                with open(fpath) as f:
-                    data = json.load(f)
+                try:
+                    with open(fpath) as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning(f"Skipping corrupt file {fpath.name}: {exc}")
+                    continue
                 # Tag the source directory for provenance
                 data["source_dir"] = str(merge_path)
                 subjects_for_norms.append(data)
@@ -553,6 +596,11 @@ def main():
         write_norms_json(norms, norms_json_path)
         write_norms_csv(norms, norms_csv_path)
         write_subjects_csv(subjects_for_norms, subjects_csv_path)
+
+        npz_counts = write_norms_npz(norms, output_dir)
+        logger.info("NPZ export:")
+        for cat, count in sorted(npz_counts.items()):
+            logger.info(f"  {cat}: {count} cells")
 
         # Save merge provenance
         merge_config = {
@@ -769,6 +817,9 @@ def main():
                     params=params_override,
                     skip_connectivity=args.skip_connectivity,
                     source=args.source,
+                    ba_connectivity=args.ba_connectivity,
+                    dk_connectivity=args.dk_connectivity,
+                    dk_corrected_power=args.dk_corrected_power,
                     marker_condition=fr.marker_condition,
                 )
                 _save_subject_result(
@@ -797,6 +848,9 @@ def main():
                     params=params_override,
                     skip_connectivity=args.skip_connectivity,
                     source=args.source,
+                    ba_connectivity=args.ba_connectivity,
+                    dk_connectivity=args.dk_connectivity,
+                    dk_corrected_power=args.dk_corrected_power,
                     marker_condition=fr.marker_condition,
                 ): fr
                 for fr in todo
@@ -853,6 +907,11 @@ def main():
     write_norms_json(norms, norms_json_path)
     write_norms_csv(norms, norms_csv_path)
     write_subjects_csv(subjects_for_norms, subjects_csv_path)
+
+    npz_counts = write_norms_npz(norms, output_dir)
+    logger.info("NPZ export:")
+    for cat, count in sorted(npz_counts.items()):
+        logger.info(f"  {cat}: {count} cells")
 
     # Build normative PSD if requested
     if args.save_psd and psd_dir is not None:
