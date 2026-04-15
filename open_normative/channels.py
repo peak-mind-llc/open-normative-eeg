@@ -1,7 +1,7 @@
 """Channel name normalization, montage mapping, and EEG file loading.
 
 Handles mapping from various EEG system naming conventions to the standard
-19-channel 10-20 montage used for normative processing.
+19-channel 10-20 or 37-channel 10-10 montages used for normative processing.
 """
 
 from __future__ import annotations
@@ -15,8 +15,14 @@ from open_normative.parameters import PIPELINE_PARAMS
 
 _PARAMS = PIPELINE_PARAMS["channels"]
 _CHANNELS_19 = _PARAMS["channels_19"]
+_CHANNELS_37 = _PARAMS["channels_37"]
 _NAME_MAP = _PARAMS["name_mapping"]
 _CAP_FIXES = _PARAMS["capitalization_fixes"]
+
+_CHANNEL_SETS = {
+    19: _CHANNELS_19,
+    37: _CHANNELS_37,
+}
 
 # Known channel base names for reference suffix detection
 _KNOWN_BASES = {
@@ -75,13 +81,30 @@ def normalize_channel_names(ch_names: list[str]) -> list[str]:
     return result
 
 
-def pick_standard_19(raw: mne.io.Raw) -> mne.io.Raw:
-    """Reduce a Raw object to the standard 19-channel 10-20 montage.
+def pick_standard_channels(raw: mne.io.Raw, n_channels: int = 19) -> mne.io.Raw:
+    """Reduce a Raw object to a standard channel montage.
+
+    Supports 19-channel (10-20) and 37-channel (10-10) montages.
 
     First normalizes channel names, then picks channels by name matching.
-    If fewer than 19 channels match by name and the raw has montage positions,
-    falls back to spatial nearest-neighbor matching.
+    If fewer than the target number of channels match by name and the raw
+    has montage positions, falls back to spatial nearest-neighbor matching.
+
+    Parameters
+    ----------
+    raw : mne.io.Raw
+        Input raw EEG data.
+    n_channels : int
+        Target channel count (19 or 37). Default 19.
     """
+    target_channels = _CHANNEL_SETS.get(n_channels)
+    if target_channels is None:
+        raise ValueError(
+            f"Unsupported channel count: {n_channels}. "
+            f"Supported: {sorted(_CHANNEL_SETS.keys())}"
+        )
+    n_required = len(target_channels)
+
     raw = raw.copy()
 
     new_names = normalize_channel_names(raw.ch_names)
@@ -92,9 +115,9 @@ def pick_standard_19(raw: mne.io.Raw) -> mne.io.Raw:
     if rename_map:
         raw.rename_channels(rename_map)
 
-    available = [ch for ch in _CHANNELS_19 if ch in raw.ch_names]
+    available = [ch for ch in target_channels if ch in raw.ch_names]
 
-    if len(available) >= 19:
+    if len(available) >= n_required:
         raw.pick(available)
         raw.reorder_channels(available)
         montage = mne.channels.make_standard_montage("standard_1020")
@@ -108,10 +131,10 @@ def pick_standard_19(raw: mne.io.Raw) -> mne.io.Raw:
         raw_pos = raw.get_montage().get_positions()["ch_pos"]
 
         raw_chs_with_pos = {ch: pos for ch, pos in raw_pos.items() if ch in raw.ch_names}
-        if len(raw_chs_with_pos) >= 19:
+        if len(raw_chs_with_pos) >= n_required:
             matched = {}
             used_sources = set()
-            for target_ch in _CHANNELS_19:
+            for target_ch in target_channels:
                 if target_ch in available:
                     matched[target_ch] = target_ch
                     used_sources.add(target_ch)
@@ -132,13 +155,13 @@ def pick_standard_19(raw: mne.io.Raw) -> mne.io.Raw:
                     matched[target_ch] = best_ch
                     used_sources.add(best_ch)
 
-            if len(matched) >= 19:
+            if len(matched) >= n_required:
                 src_chs = list(matched.values())
                 raw.pick(src_chs)
                 rename = {v: k for k, v in matched.items() if v != k}
                 if rename:
                     raw.rename_channels(rename)
-                raw.reorder_channels(_CHANNELS_19)
+                raw.reorder_channels(target_channels)
                 montage = mne.channels.make_standard_montage("standard_1020")
                 raw.set_montage(montage, on_missing="ignore", verbose=False)
                 return raw
@@ -150,10 +173,18 @@ def pick_standard_19(raw: mne.io.Raw) -> mne.io.Raw:
         return raw
 
     raise ValueError(
-        f"Cannot map channels to standard 19-channel montage. "
-        f"Found {len(available)} matching channels out of 19 required. "
+        f"Cannot map channels to standard {n_channels}-channel montage. "
+        f"Found {len(available)} matching channels out of {n_required} required. "
         f"Raw channels: {raw.ch_names[:10]}..."
     )
+
+
+def pick_standard_19(raw: mne.io.Raw) -> mne.io.Raw:
+    """Reduce a Raw object to the standard 19-channel 10-20 montage.
+
+    Convenience wrapper around :func:`pick_standard_channels`.
+    """
+    return pick_standard_channels(raw, n_channels=19)
 
 
 _LOADERS = {
@@ -182,10 +213,19 @@ def set_egi128_montage(raw: mne.io.Raw) -> mne.io.Raw:
     return raw
 
 
-def load_and_standardize(filepath: str | Path) -> mne.io.Raw:
-    """Load an EEG file and standardize to 19-channel 10-20 montage.
+def load_and_standardize(
+    filepath: str | Path, n_channels: int = 19,
+) -> mne.io.Raw:
+    """Load an EEG file and standardize to a standard channel montage.
 
     Supports: .vhdr (BrainVision), .edf, .set (EEGLAB), .fif (MNE)
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Path to the EEG file.
+    n_channels : int
+        Target channel count (19 or 37). Default 19.
     """
     filepath = Path(filepath)
     ext = filepath.suffix.lower()
@@ -201,4 +241,4 @@ def load_and_standardize(filepath: str | Path) -> mne.io.Raw:
     if len(eeg_types) < len(raw.ch_names):
         raw.pick("eeg")
 
-    return pick_standard_19(raw)
+    return pick_standard_channels(raw, n_channels=n_channels)

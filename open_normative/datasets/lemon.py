@@ -22,8 +22,8 @@ from pathlib import Path
 import mne
 import numpy as np
 
-from open_normative.channels import pick_standard_19
-from open_normative.datasets.base import DatasetLoader, SubjectRecord
+from open_normative.channels import pick_standard_channels
+from open_normative.datasets.base import DatasetLoader, SubjectFileRecord, SubjectRecord
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ class LEMONLoader(DatasetLoader):
             # Drop non-EEG channels, then standardize to the 19-channel montage
             raw.pick("eeg")
             try:
-                raw = pick_standard_19(raw)
+                raw = pick_standard_channels(raw, n_channels=self.n_channels)
             except Exception:
                 logger.warning(
                     "Channel standardization failed for %s — skipping", vhdr_path, exc_info=True
@@ -166,6 +166,60 @@ class LEMONLoader(DatasetLoader):
                     yield SubjectRecord(
                         subject_id=subject_id, age=age, sex=sex,
                         raw=cond_raw, condition=cond, metadata=metadata,
+                    )
+
+    def iter_subject_files(self, data_dir: Path) -> Iterator[SubjectFileRecord]:
+        """Yield SubjectFileRecord for each EO/EC file without loading raw data.
+
+        For files with separate EO/EC filenames, yields one record per file.
+        For single-file recordings (no condition in filename), yields two
+        records (eo, ec) with marker_condition set, so the worker can split.
+        """
+        participants = self._load_participants(data_dir)
+
+        vhdr_files = sorted(
+            set(data_dir.glob("sub-*/eeg/*.vhdr"))
+            | set(data_dir.glob("sub-*/RSEEG/*.vhdr"))
+            | set(data_dir.glob("sub-*/ses-*/eeg/*.vhdr"))
+        )
+        vhdr_files = [f for f in vhdr_files if not f.name.startswith(".")]
+
+        for vhdr_path in vhdr_files:
+            subject_id = None
+            for part in vhdr_path.parent.parts:
+                if part.startswith("sub-"):
+                    subject_id = part
+                    break
+            if subject_id is None:
+                continue
+
+            original_id = _extract_original_id(vhdr_path)
+            info = participants.get(subject_id, {})
+            if not info and original_id and original_id != subject_id:
+                info = participants.get(original_id, {})
+            age = info.get("age", float("nan"))
+            sex = info.get("sex", "")
+
+            # Fix vhdr refs path for the worker
+            load_path = _fix_vhdr_refs(vhdr_path)
+            metadata = {"source_file": str(vhdr_path), **info}
+
+            condition = self._detect_condition(vhdr_path.name)
+
+            if condition is not None:
+                yield SubjectFileRecord(
+                    subject_id=subject_id, age=age, sex=sex,
+                    condition=condition, filepath=load_path,
+                    metadata=metadata,
+                )
+            else:
+                # Single-file: yield both conditions with marker hints
+                for cond in ("eo", "ec"):
+                    yield SubjectFileRecord(
+                        subject_id=subject_id, age=age, sex=sex,
+                        condition=cond, filepath=load_path,
+                        metadata=metadata,
+                        marker_condition=cond,
                     )
 
     # ------------------------------------------------------------------

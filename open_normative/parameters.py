@@ -30,20 +30,59 @@ PIPELINE_PARAMS = {
             "flat_threshold_factor": 0.01,
             "noisy_threshold_factor": 10.0,
         },
+        # ASR (burst reconstruction) is DISABLED by default — the canonical
+        # pipeline is Neurofield-style (filter → bad ch → reference → ICA)
+        # with no ASR. ASR remains available as an opt-in advanced feature
+        # for research use; set asr.enabled=True to re-enable. See the
+        # design note in open_normative.preprocessing.preprocess().
         "asr": {
+            "enabled": False,
             "cutoff": 20,
             "window_length": 0.5,
+        },
+        # Line noise detection is DISABLED by default — pyprep RANSAC
+        # already catches most line-noise-dominated channels via the
+        # correlation check. This detector is available for cases where
+        # line noise is a primary concern and RANSAC alone is insufficient.
+        "line_noise": {
+            "enabled": False,
+            "line_freq": 60.0,
+            "max_ratio": 0.4,
+            "bandwidth": 2.0,
+        },
+        # Window rejection is DISABLED by default. Neurofield-style
+        # cleaning does not drop windows; any residual artifact after
+        # ICA rejection is handled clinically via manual artifact
+        # annotation in the DataPrep workflow (CAP-01 §6).
+        "window_rejection": {
+            "enabled": False,
+            "window_length": 0.5,
+            "threshold_multiplier": 5.0,
         },
         "ica": {
             "method": "picard",
             "extended": True,
-            "n_components": 0.999,
+            # n_components: None → auto-compute as min(data_rank, nbchan-1).
+            # This avoids rank collapse on drifty data (the old 0.999
+            # variance-fraction default would fit only 5-10 components
+            # when low-frequency drift dominated variance). Callers who
+            # want explicit control can still pass an int or float <1.0.
+            "n_components": None,
             "max_iter": 500,
             "random_state": 42,
             "two_stage_filter": True,
             "ica_highpass": 1.0,
+            # ICLabel auto-decision thresholds:
+            #   brain >= brain_threshold         → auto-keep
+            #   brain < brain_threshold          → review
+            #   non-brain >= review_threshold    → auto-reject
+            #   non-brain < review_threshold     → review
+            # Bumped review_threshold from 0.50 → 0.60 (April 2026) to
+            # be more conservative on borderline artifact calls — the
+            # clinician still sees review-flagged components and can
+            # confirm.
             "brain_threshold": 0.80,
-            "review_threshold": 0.50,
+            "review_threshold": 0.60,
         },
         "reference": "average",
     },
@@ -89,6 +128,24 @@ PIPELINE_PARAMS = {
                 ["F7", "F8"],
                 ["O1", "O2"],
             ],
+            "homologous_pairs_37": [
+                ["F3", "F4"],
+                ["C3", "C4"],
+                ["P3", "P4"],
+                ["T3", "T4"],
+                ["T5", "T6"],
+                ["F7", "F8"],
+                ["O1", "O2"],
+                ["AF3", "AF4"],
+                ["FC3", "FC4"],
+                ["FC1", "FC2"],
+                ["FT7", "FT8"],
+                ["CP3", "CP4"],
+                ["CP1", "CP2"],
+                ["TP7", "TP8"],
+                ["PO3", "PO4"],
+                ["P1", "P2"],
+            ],
             "threshold": 0.15,
         },
         "gsf": {
@@ -126,6 +183,23 @@ PIPELINE_PARAMS = {
             "P_R": ["P4"],
             "O": ["O1", "O2"],
         },
+        "hubs_37": {
+            "FP": ["Fp1", "Fp2"],
+            "AF_L": ["AF3"],
+            "AF_R": ["AF4"],
+            "F_mid": ["Fz", "FC1", "FC2"],
+            "F_L": ["F3", "F7", "FC3"],
+            "F_R": ["F4", "F8", "FC4"],
+            "C_mid": ["Cz"],
+            "T_L": ["T3", "T5", "FT7", "TP7"],
+            "T_R": ["T4", "T6", "FT8", "TP8"],
+            "P_mid": ["Pz", "CP1", "CP2", "P1", "P2"],
+            "P_L": ["P3", "CP3"],
+            "P_R": ["P4", "CP4"],
+            "PO_L": ["PO3"],
+            "PO_R": ["PO4"],
+            "O": ["O1", "O2"],
+        },
         "graph": {
             "threshold_percentile": 75,
         },
@@ -151,6 +225,22 @@ PIPELINE_PARAMS = {
             "T3", "C3", "Cz", "C4", "T4",
             "T5", "P3", "Pz", "P4", "T6",
             "O1", "O2",
+        ],
+        "channels_37": [
+            # Standard 10-20 (19 channels)
+            "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8",
+            "T3", "C3", "Cz", "C4", "T4",
+            "T5", "P3", "Pz", "P4", "T6",
+            "O1", "O2",
+            # Extended 10-10 positions (18 additional)
+            # Selected to match pre-computed source localization forward model
+            "AF3", "AF4",
+            "FC3", "FC1", "FC2", "FC4",
+            "FT7", "FT8",
+            "CP3", "CP1", "CP2", "CP4",
+            "TP7", "TP8",
+            "PO3", "PO4",
+            "P1", "P2",
         ],
         "name_mapping": {
             "T7": "T3",
@@ -215,6 +305,45 @@ REPORT_PARAMS = {
         "T6":  ["T4", "P4", "O2"],
         "O1":  ["T5", "P3", "O2"],
         "O2":  ["T6", "P4", "O1"],
+    },
+    "adjacency_37": {
+        "Fp1":  ["Fp2", "AF3", "F3", "F7"],
+        "Fp2":  ["Fp1", "AF4", "F4", "F8"],
+        "AF3":  ["Fp1", "F3", "FC1", "FC3"],
+        "AF4":  ["Fp2", "F4", "FC2", "FC4"],
+        "F7":   ["Fp1", "F3", "FT7", "FC3"],
+        "F3":   ["Fp1", "AF3", "F7", "Fz", "FC3", "FC1"],
+        "Fz":   ["F3", "F4", "FC1", "FC2", "Cz"],
+        "F4":   ["Fp2", "AF4", "Fz", "F8", "FC2", "FC4"],
+        "F8":   ["Fp2", "F4", "FT8", "FC4"],
+        "FT7":  ["F7", "FC3", "T3"],
+        "FC3":  ["AF3", "F7", "F3", "FT7", "FC1", "C3", "T3"],
+        "FC1":  ["AF3", "F3", "Fz", "FC3", "FC2", "C3", "Cz"],
+        "FC2":  ["AF4", "Fz", "F4", "FC1", "FC4", "Cz", "C4"],
+        "FC4":  ["AF4", "F4", "F8", "FC2", "FT8", "C4", "T4"],
+        "FT8":  ["F8", "FC4", "T4"],
+        "T3":   ["FT7", "FC3", "C3", "TP7", "T5"],
+        "C3":   ["FC3", "FC1", "T3", "Cz", "CP3", "CP1"],
+        "Cz":   ["FC1", "FC2", "C3", "C4", "CP1", "CP2"],
+        "C4":   ["FC2", "FC4", "Cz", "T4", "CP2", "CP4"],
+        "T4":   ["FT8", "FC4", "C4", "TP8", "T6"],
+        "TP7":  ["T3", "T5", "CP3"],
+        "CP3":  ["C3", "T5", "TP7", "CP1", "P3"],
+        "CP1":  ["C3", "Cz", "CP3", "CP2", "P3", "P1", "Pz"],
+        "CP2":  ["Cz", "C4", "CP1", "CP4", "Pz", "P2", "P4"],
+        "CP4":  ["C4", "T6", "CP2", "TP8", "P4"],
+        "TP8":  ["T4", "T6", "CP4"],
+        "T5":   ["T3", "TP7", "CP3", "P3", "PO3", "O1"],
+        "P3":   ["CP3", "CP1", "T5", "P1", "Pz", "PO3"],
+        "P1":   ["CP1", "P3", "Pz", "PO3"],
+        "Pz":   ["CP1", "CP2", "P1", "P3", "P4", "P2"],
+        "P2":   ["CP2", "Pz", "P4", "PO4"],
+        "P4":   ["CP2", "CP4", "Pz", "P2", "T6", "PO4"],
+        "T6":   ["T4", "CP4", "TP8", "P4", "PO4", "O2"],
+        "PO3":  ["T5", "P3", "P1", "O1", "O2"],
+        "PO4":  ["P2", "P4", "T6", "O1", "O2"],
+        "O1":   ["T5", "PO3", "PO4", "O2"],
+        "O2":   ["PO4", "T6", "PO3", "O1"],
     },
     "fdr_alpha": 0.05,
     "low_confidence_n": 10,

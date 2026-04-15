@@ -6,6 +6,7 @@ import pytest
 from open_normative.channels import (
     normalize_channel_names,
     pick_standard_19,
+    pick_standard_channels,
     strip_reference_suffix,
     load_and_standardize,
 )
@@ -77,6 +78,35 @@ def test_pick_standard_19_spatial_fallback():
         pass  # Acceptable if no spatial positions available
 
 
+def test_pick_standard_37_from_62ch(synthetic_raw_62ch):
+    raw_37 = pick_standard_channels(synthetic_raw_62ch, n_channels=37)
+    assert len(raw_37.ch_names) == 37
+    # Standard 10-20 channels present
+    assert "Fp1" in raw_37.ch_names
+    assert "O2" in raw_37.ch_names
+    # Extended 10-10 channels present
+    assert "FC1" in raw_37.ch_names
+    assert "CP3" in raw_37.ch_names
+    assert "P1" in raw_37.ch_names
+    # T7 should have been renamed to T3
+    assert "T3" in raw_37.ch_names
+    assert "T7" not in raw_37.ch_names
+
+
+def test_pick_standard_37_already_37ch(synthetic_raw_37ch):
+    raw_37 = pick_standard_channels(synthetic_raw_37ch, n_channels=37)
+    assert len(raw_37.ch_names) == 37
+
+
+def test_pick_standard_channels_invalid_count():
+    """Requesting an unsupported channel count should raise."""
+    import mne
+    info = mne.create_info(ch_names=["Fp1"], sfreq=256, ch_types="eeg")
+    raw = mne.io.RawArray(np.zeros((1, 256)), info, verbose=False)
+    with pytest.raises(ValueError, match="Unsupported channel count"):
+        pick_standard_channels(raw, n_channels=25)
+
+
 def test_load_and_standardize_returns_19ch(tmp_path, synthetic_raw_62ch):
     """Round-trip: save to .fif, load_and_standardize, get 19ch."""
     fpath = tmp_path / "test_raw.fif"
@@ -84,3 +114,11 @@ def test_load_and_standardize_returns_19ch(tmp_path, synthetic_raw_62ch):
     raw = load_and_standardize(str(fpath))
     assert len(raw.ch_names) == 19
     assert raw.info["sfreq"] == synthetic_raw_62ch.info["sfreq"]
+
+
+def test_load_and_standardize_returns_37ch(tmp_path, synthetic_raw_62ch):
+    """Round-trip: save to .fif, load_and_standardize with n_channels=37."""
+    fpath = tmp_path / "test_raw_37.fif"
+    synthetic_raw_62ch.save(fpath, overwrite=True, verbose=False)
+    raw = load_and_standardize(str(fpath), n_channels=37)
+    assert len(raw.ch_names) == 37

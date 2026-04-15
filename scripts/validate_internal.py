@@ -41,8 +41,25 @@ class _NumpyEncoder(json.JSONEncoder):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from open_normative.normative import build_normative, _DEFAULT_AGE_BINS
+from open_normative.parameters import PIPELINE_PARAMS
 
 logger = logging.getLogger("validate_internal")
+
+# Channel sets derived from pipeline parameters
+_CHANNELS_19 = set(PIPELINE_PARAMS["channels"]["channels_19"])
+_CHANNELS_37 = set(PIPELINE_PARAMS["channels"]["channels_37"])
+
+
+def _detect_sensor_channels(subjects: list[dict]) -> set[str]:
+    """Detect which sensor channels are in the data (19 or 37)."""
+    all_channels = set()
+    for s in subjects[:5]:  # sample a few
+        for ch in s.get("metrics", {}):
+            if not ch.startswith("_"):
+                all_channels.add(ch)
+    if all_channels & (_CHANNELS_37 - _CHANNELS_19):
+        return _CHANNELS_37
+    return _CHANNELS_19
 
 
 def load_subjects(subjects_dir: Path) -> list[dict]:
@@ -178,6 +195,7 @@ def check_eo_ec_alpha(subjects: list[dict], age_bins: list[int]) -> dict:
 
     Uses relative_power (unit-independent) to avoid V²/Hz scale issues.
     Falls back to absolute_power if relative is unavailable.
+    Supports both 19-channel and 37-channel montages.
 
     Returns per-bin and per-channel results.
     """
@@ -190,12 +208,8 @@ def check_eo_ec_alpha(subjects: list[dict], age_bins: list[int]) -> dict:
         metric = "absolute_power"
         alpha_cells = [c for c in norms if c.band == "Alpha" and c.metric == metric]
 
-    # Standard 19 channels only (skip synthetic channels like _subject, _hub, etc.)
-    standard_channels = {
-        "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8",
-        "T3", "C3", "Cz", "C4", "T4",
-        "T5", "P3", "Pz", "P4", "T6", "O1", "O2",
-    }
+    # Detect channel set from data (skip synthetic channels like _subject, _hub)
+    standard_channels = _detect_sensor_channels(subjects)
 
     # Index: (bin, channel) -> {eo: mean, ec: mean}
     alpha_by_cell: dict[tuple, dict] = defaultdict(dict)

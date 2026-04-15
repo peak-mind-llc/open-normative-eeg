@@ -50,6 +50,58 @@ def synthetic_raw_19ch():
 
 
 @pytest.fixture
+def synthetic_raw_37ch():
+    """Create a synthetic 37-channel EEG Raw object for testing.
+
+    Uses the extended 10-10 montage: 19 standard + 18 additional channels.
+    256 Hz, 60 seconds, with 10 Hz alpha at posterior channels.
+    """
+    ch_names = [
+        # Standard 10-20 (19)
+        "Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8",
+        "T3", "C3", "Cz", "C4", "T4",
+        "T5", "P3", "Pz", "P4", "T6",
+        "O1", "O2",
+        # Extended 10-10 (18) — matches pre-computed forward model
+        "AF3", "AF4",
+        "FC3", "FC1", "FC2", "FC4",
+        "FT7", "FT8",
+        "CP3", "CP1", "CP2", "CP4",
+        "TP7", "TP8",
+        "PO3", "PO4",
+        "P1", "P2",
+    ]
+    sfreq = 256.0
+    n_channels = len(ch_names)
+    duration = 60.0
+    n_samples = int(sfreq * duration)
+    rng = np.random.RandomState(44)
+
+    # 1/f noise base
+    data = np.zeros((n_channels, n_samples))
+    freqs = np.fft.rfftfreq(n_samples, d=1.0 / sfreq)
+    freqs[0] = 1.0
+    for i in range(n_channels):
+        spectrum = rng.randn(len(freqs)) + 1j * rng.randn(len(freqs))
+        spectrum *= 1.0 / np.sqrt(freqs)
+        data[i] = np.fft.irfft(spectrum, n=n_samples)
+
+    # Add 10 Hz alpha to posterior channels
+    t = np.arange(n_samples) / sfreq
+    alpha = 5e-6 * np.sin(2 * np.pi * 10 * t)
+    for ch in ["O1", "O2", "P3", "P4", "Pz", "PO3", "PO4"]:
+        data[ch_names.index(ch)] += alpha
+
+    data = data / np.std(data) * 20e-6
+
+    info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types="eeg")
+    raw = mne.io.RawArray(data, info, verbose=False)
+    montage = mne.channels.make_standard_montage("standard_1020")
+    raw.set_montage(montage, on_missing="ignore", verbose=False)
+    return raw
+
+
+@pytest.fixture
 def synthetic_raw_62ch():
     """Create a synthetic 62-channel BrainVision-like Raw (simulates LEMON).
 

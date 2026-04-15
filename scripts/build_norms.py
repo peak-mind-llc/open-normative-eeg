@@ -24,16 +24,131 @@ import logging
 import sys
 import time
 import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
 from open_normative.datasets import DATASETS
-from open_normative.io import write_norms_csv, write_norms_json, write_subjects_csv
+from open_normative.io import write_norms_csv, write_norms_json, write_norms_npz, write_subjects_csv
 from open_normative.normative import build_normative
 from open_normative.parameters import PIPELINE_PARAMS
 from open_normative.pipeline import process_resting
+
+
+def _process_one_subject(
+    filepath: str,
+    subject_id: str,
+    age: float,
+    sex: str,
+    condition: str,
+    n_channels: int,
+    params: dict | None,
+    skip_connectivity: bool,
+    source: bool = False,
+    ba_connectivity: bool = False,
+    dk_connectivity: bool = False,
+    dk_corrected_power: bool = False,
+    marker_condition: str | None = None,
+) -> dict:
+    """Worker function for parallel subject processing.
+
+    Loads raw data, standardizes channels, and runs the full pipeline.
+    Designed to be called from ProcessPoolExecutor (must be top-level
+    and all arguments must be picklable).
+
+    Returns the subject_data dict ready for checkpointing.
+    Raises RuntimeError on failure (never FloatingPointError or other
+    errors that could kill the worker process).
+    """
+    try:
+        import mne
+        import numpy as np
+        from open_normative.channels import pick_standard_channels
+
+        np.seterr(all="warn")
+
+        filepath = Path(filepath)
+        ext = filepath.suffix.lower()
+
+        # Load raw data
+        loaders = {
+            ".vhdr": mne.io.read_raw_brainvision,
+            ".edf": mne.io.read_raw_edf,
+            ".set": mne.io.read_raw_eeglab,
+            ".fif": mne.io.read_raw_fif,
+            ".mff": mne.io.read_raw_egi,
+        }
+        raw = loaders[ext](str(filepath), preload=True, verbose=False)
+        raw.pick("eeg")
+
+        # Handle single-file recordings with marker-based condition splitting
+        if marker_condition is not None:
+            from open_normative.datasets.lemon import _split_by_markers
+            splits = _split_by_markers(raw)
+            if marker_condition in splits:
+                raw = splits[marker_condition]
+            else:
+                raise ValueError(
+                    f"Condition {marker_condition} not found in markers "
+                    f"for {filepath}"
+                )
+
+        raw = pick_standard_channels(raw, n_channels=n_channels)
+
+        result = process_resting(
+            raw,
+            condition=condition,
+            params=params,
+            skip_connectivity=skip_connectivity,
+            source=source,
+            ba_connectivity=ba_connectivity,
+            dk_connectivity=dk_connectivity,
+            dk_corrected_power=dk_corrected_power,
+        )
+
+        return {
+            "subject_id": subject_id,
+            "age": age,
+            "sex": sex,
+            "condition": condition,
+            "metrics": result.to_nested_dict(),
+            "_spectral": result.spectral,
+        }
+    except BaseException as exc:
+        # Convert any error (including FloatingPointError, which can kill
+        # the ProcessPoolExecutor) into a RuntimeError so the pool survives.
+        raise RuntimeError(
+            f"{subject_id} ({condition}): {type(exc).__name__}: {exc}"
+        ) from None
+
+
+def _save_subject_result(
+    subject_data: dict,
+    subjects_dir: Path,
+    psd_dir: Path | None,
+    subjects_for_norms: list,
+):
+    """Checkpoint a processed subject and optionally save PSD data."""
+    spectral = subject_data.pop("_spectral", None)
+
+    save_checkpoint(
+        subjects_dir, subject_data["subject_id"],
+        subject_data["condition"], subject_data,
+    )
+
+    if psd_dir is not None and spectral is not None:
+        psds = spectral.get("psds")
+        freqs = spectral.get("freqs")
+        ch_names = spectral.get("ch_names", [])
+        if psds is not None and freqs is not None:
+            save_psd_checkpoint(
+                psd_dir, subject_data["subject_id"],
+                subject_data["condition"], freqs, psds, ch_names,
+            )
+
+    subjects_for_norms.append(subject_data)
 
 
 def setup_logging(output_dir: Path) -> logging.Logger:
@@ -96,8 +211,13 @@ def load_checkpoints(subjects_dir: Path) -> dict[str, dict]:
         return checkpoints
     for fpath in subjects_dir.glob("*.json"):
         key = fpath.stem  # e.g., "sub-010002_eo"
-        with open(fpath) as f:
-            checkpoints[key] = json.load(f)
+        try:
+            with open(fpath) as f:
+                checkpoints[key] = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logging.getLogger(__name__).warning(
+                f"Skipping corrupt checkpoint {fpath.name}: {exc}"
+            )
     return checkpoints
 
 
@@ -109,6 +229,7 @@ def save_run_config(output_dir: Path, args: argparse.Namespace):
         "data_dir": str(args.data_dir),
         "output": str(args.output),
         "condition": args.condition,
+        "channels": args.channels,
         "max_subjects": args.max_subjects,
         "skip_connectivity": args.skip_connectivity,
         "save_psd": args.save_psd,
@@ -328,8 +449,62 @@ def main():
         help="Path to a subjects/ checkpoint directory to include in merge. "
              "Can be specified multiple times. Use with --merge.",
     )
+    parser.add_argument(
+        "--channels",
+        type=int,
+        choices=[19, 37],
+        default=19,
+        help="Target channel count: 19 (standard 10-20) or 37 (extended 10-10). "
+             "Default: 19. Requires datasets with >= 37 channels for 37.",
+    )
+    parser.add_argument(
+        "-j", "--jobs",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes (default: 1 = sequential). "
+             "Memory: ~2 GB/worker for 19ch, ~3 GB/worker for 37ch.",
+    )
+    parser.add_argument(
+        "--source",
+        action="store_true",
+        help="Enable source localization (sLORETA power + DICS connectivity). "
+             "Adds ~30-60s per subject. Works with both 19 and 37 channels.",
+    )
+    parser.add_argument(
+        "--ba-connectivity",
+        action="store_true",
+        help="Compute Brodmann Area-to-BA connectivity (requires --source). "
+             "Adds ~30 BA-pair metrics per method per band.",
+    )
+    parser.add_argument(
+        "--dk-connectivity",
+        action="store_true",
+        help="Compute individual DK parcel-to-parcel connectivity (requires --source). "
+             "Adds all 68 DK parcels (2,278 pairs) per method per band.",
+    )
+    parser.add_argument(
+        "--dk-corrected-power",
+        action="store_true",
+        help="(deprecated, no-op) DK corrected power is now always computed "
+             "when --dk-connectivity or --ba-connectivity is enabled.",
+    )
+    parser.add_argument(
+        "--subject-range",
+        type=str,
+        default=None,
+        help="Process a slice of subjects by index: START:END (0-based, "
+             "exclusive end). E.g. --subject-range 0:100 for first 100. "
+             "Useful for distributing work across machines.",
+    )
     args = parser.parse_args()
 
+
+    # --ba-connectivity / --dk-connectivity imply --source
+    if (args.ba_connectivity or args.dk_connectivity) and not args.source:
+        logging.getLogger(__name__).warning(
+            "--ba-connectivity/--dk-connectivity requires --source; enabling --source"
+        )
+        args.source = True
     # ── Merge mode ──────────────────────────────────────────────────────
     if args.merge:
         if not args.merge_dir:
@@ -349,8 +524,12 @@ def main():
                 continue
             count = 0
             for fpath in sorted(merge_path.glob("*.json")):
-                with open(fpath) as f:
-                    data = json.load(f)
+                try:
+                    with open(fpath) as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning(f"Skipping corrupt file {fpath.name}: {exc}")
+                    continue
                 # Tag the source directory for provenance
                 data["source_dir"] = str(merge_path)
                 subjects_for_norms.append(data)
@@ -417,6 +596,11 @@ def main():
         write_norms_json(norms, norms_json_path)
         write_norms_csv(norms, norms_csv_path)
         write_subjects_csv(subjects_for_norms, subjects_csv_path)
+
+        npz_counts = write_norms_npz(norms, output_dir)
+        logger.info("NPZ export:")
+        for cat, count in sorted(npz_counts.items()):
+            logger.info(f"  {cat}: {count} cells")
 
         # Save merge provenance
         merge_config = {
@@ -515,6 +699,7 @@ def main():
     # Initialize dataset loader
     LoaderClass = DATASETS[args.dataset]
     loader = LoaderClass()
+    loader.n_channels = args.channels
 
     # Apply dataset-specific line frequency (e.g. 50 Hz for European datasets)
     if hasattr(loader, "line_freq") and loader.line_freq != PIPELINE_PARAMS["preprocessing"]["filter"]["notch_freq"]:
@@ -532,6 +717,20 @@ def main():
     else:
         params_override = None
 
+    # Apply 37-channel overrides if requested
+    if args.channels == 37:
+        import copy
+        if params_override is None:
+            params_override = copy.deepcopy(PIPELINE_PARAMS)
+        params_override["connectivity"]["hubs"] = params_override["connectivity"]["hubs_37"]
+        params_override["spectral"]["asymmetry"]["homologous_pairs"] = (
+            params_override["spectral"]["asymmetry"]["homologous_pairs_37"]
+        )
+        params_override["spectral"]["iaf"]["posterior_channels"] = [
+            "O1", "O2", "Pz", "P3", "P4", "PO3", "PO4",
+        ]
+        logger.info("Using 37-channel montage with extended hubs and asymmetry pairs")
+
     # Load QC allow-list if provided
     qc_allow = None
     if args.qc_dir:
@@ -545,102 +744,137 @@ def main():
         else:
             logger.warning(f"QC dir provided but no ready.txt or ready_subjects.txt found — processing all subjects")
 
-    # Count and filter subjects
+    # Scan for work items (lightweight — no raw data loaded)
     logger.info(f"Scanning {args.data_dir} for {args.dataset} subjects...")
 
-    try:
-        from tqdm import tqdm
-        use_tqdm = True
-    except ImportError:
-        use_tqdm = False
-        logger.info("Install tqdm for progress bars: pip install tqdm")
-
-    processed = 0
-    skipped = 0
-    errors = 0
-    start_time = time.time()
-
-    # Wrap the iterator
-    subject_iter = loader.iter_subjects(args.data_dir)
+    # Parse subject range if provided
+    range_start, range_end = 0, None
+    if args.subject_range:
+        parts = args.subject_range.split(":")
+        range_start = int(parts[0])
+        range_end = int(parts[1]) if len(parts) > 1 else None
+        logger.info(f"Subject range: [{range_start}:{range_end})")
 
     subjects_for_norms = []
-
-    # Process subjects
+    skipped = 0
     qc_skipped = 0
-    for record in subject_iter:
-        # Filter by condition
-        if args.condition != "both" and record.condition != args.condition:
-            continue
+    eligible_idx = 0  # Index into eligible (post-filter) subjects
+    todo = []  # List of SubjectFileRecords to process
 
-        # Filter by QC allow-list
-        if qc_allow is not None and record.subject_id not in qc_allow:
+    for file_record in loader.iter_subject_files(args.data_dir):
+        if args.condition != "both" and file_record.condition != args.condition:
+            continue
+        if qc_allow is not None and file_record.subject_id not in qc_allow:
             qc_skipped += 1
             continue
 
-        checkpoint_key = f"{record.subject_id}_{record.condition}"
+        # Apply subject range filter (before checkpoint check)
+        if eligible_idx < range_start:
+            eligible_idx += 1
+            continue
+        if range_end is not None and eligible_idx >= range_end:
+            eligible_idx += 1
+            continue
+        eligible_idx += 1
 
-        # Check if already processed
+        checkpoint_key = f"{file_record.subject_id}_{file_record.condition}"
         if checkpoint_key in checkpoints:
             subjects_for_norms.append(checkpoints[checkpoint_key])
             skipped += 1
             continue
 
-        # Check max subjects limit
-        if args.max_subjects > 0 and (processed + skipped) >= args.max_subjects:
+        if args.max_subjects > 0 and (len(todo) + skipped) >= args.max_subjects:
             break
 
-        # Process this subject
-        elapsed = time.time() - start_time
-        rate = (processed + 1) / elapsed if elapsed > 0 else 0
-        logger.info(
-            f"[{processed + skipped + 1}] Processing {record.subject_id} "
-            f"({record.condition}) age={record.age} "
-            f"[{rate:.1f} subj/min]"
-        )
+        todo.append(file_record)
 
-        try:
-            result = process_resting(
-                record.raw,
-                condition=record.condition,
-                params=params_override,
-                skip_connectivity=args.skip_connectivity,
+    logger.info(
+        f"Found {len(todo)} subjects to process, {skipped} from checkpoint"
+        + (f", {qc_skipped} excluded by QC" if qc_skipped else "")
+    )
+
+    processed = 0
+    errors = 0
+    start_time = time.time()
+
+    if args.jobs <= 1:
+        # ── Sequential processing ──────────────────────────────────────
+        for i, fr in enumerate(todo):
+            elapsed = time.time() - start_time
+            rate = (i + 1) / elapsed if elapsed > 0 else 0
+            logger.info(
+                f"[{skipped + i + 1}] Processing {fr.subject_id} "
+                f"({fr.condition}) age={fr.age} [{rate * 60:.1f} subj/min]"
             )
-
-            subject_data = {
-                "subject_id": record.subject_id,
-                "age": record.age,
-                "sex": record.sex,
-                "condition": record.condition,
-                "metrics": result.to_nested_dict(),
+            try:
+                subject_data = _process_one_subject(
+                    filepath=str(fr.filepath),
+                    subject_id=fr.subject_id,
+                    age=fr.age,
+                    sex=fr.sex,
+                    condition=fr.condition,
+                    n_channels=args.channels,
+                    params=params_override,
+                    skip_connectivity=args.skip_connectivity,
+                    source=args.source,
+                    ba_connectivity=args.ba_connectivity,
+                    dk_connectivity=args.dk_connectivity,
+                    dk_corrected_power=args.dk_corrected_power,
+                    marker_condition=fr.marker_condition,
+                )
+                _save_subject_result(
+                    subject_data, subjects_dir, psd_dir, subjects_for_norms,
+                )
+                processed += 1
+            except Exception:
+                errors += 1
+                logger.error(
+                    f"FAILED: {fr.subject_id} ({fr.condition})\n"
+                    + traceback.format_exc()
+                )
+    else:
+        # ── Parallel processing ────────────────────────────────────────
+        logger.info(f"Processing with {args.jobs} parallel workers")
+        with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {
+                pool.submit(
+                    _process_one_subject,
+                    filepath=str(fr.filepath),
+                    subject_id=fr.subject_id,
+                    age=fr.age,
+                    sex=fr.sex,
+                    condition=fr.condition,
+                    n_channels=args.channels,
+                    params=params_override,
+                    skip_connectivity=args.skip_connectivity,
+                    source=args.source,
+                    ba_connectivity=args.ba_connectivity,
+                    dk_connectivity=args.dk_connectivity,
+                    dk_corrected_power=args.dk_corrected_power,
+                    marker_condition=fr.marker_condition,
+                ): fr
+                for fr in todo
             }
-
-            # Checkpoint
-            save_checkpoint(subjects_dir, record.subject_id, record.condition, subject_data)
-
-            # Save PSD checkpoint if requested
-            if psd_dir is not None and result.spectral is not None:
-                psds = result.spectral.get("psds")
-                freqs = result.spectral.get("freqs")
-                ch_names = result.spectral.get("ch_names", [])
-                if psds is not None and freqs is not None:
-                    save_psd_checkpoint(
-                        psd_dir, record.subject_id, record.condition,
-                        freqs, psds, ch_names,
+            for i, future in enumerate(as_completed(futures)):
+                fr = futures[future]
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                try:
+                    subject_data = future.result()
+                    _save_subject_result(
+                        subject_data, subjects_dir, psd_dir, subjects_for_norms,
                     )
-
-            subjects_for_norms.append(subject_data)
-            processed += 1
-
-        except Exception:
-            errors += 1
-            tb = traceback.format_exc()
-            logger.error(
-                f"FAILED: {record.subject_id} ({record.condition})\n{tb}"
-            )
-            continue
-
-        # Free memory
-        del record
+                    processed += 1
+                    logger.info(
+                        f"[{skipped + i + 1}] Done {fr.subject_id} "
+                        f"({fr.condition}) [{rate * 60:.1f} subj/min]"
+                    )
+                except Exception:
+                    errors += 1
+                    logger.error(
+                        f"FAILED: {fr.subject_id} ({fr.condition})\n"
+                        + traceback.format_exc()
+                    )
 
     elapsed_total = time.time() - start_time
     parts = [f"{processed} processed", f"{skipped} resumed from checkpoint", f"{errors} errors"]
@@ -673,6 +907,11 @@ def main():
     write_norms_json(norms, norms_json_path)
     write_norms_csv(norms, norms_csv_path)
     write_subjects_csv(subjects_for_norms, subjects_csv_path)
+
+    npz_counts = write_norms_npz(norms, output_dir)
+    logger.info("NPZ export:")
+    for cat, count in sorted(npz_counts.items()):
+        logger.info(f"  {cat}: {count} cells")
 
     # Build normative PSD if requested
     if args.save_psd and psd_dir is not None:

@@ -22,13 +22,13 @@ def test_preprocessing_ica_params():
     ica = PIPELINE_PARAMS["preprocessing"]["ica"]
     assert ica["method"] == "picard"
     assert ica["extended"] is True
-    assert ica["n_components"] == 0.999
+    assert ica["n_components"] is None
     assert ica["max_iter"] == 500
     assert ica["random_state"] == 42
     assert ica["two_stage_filter"] is True
     assert ica["ica_highpass"] == 1.0
     assert ica["brain_threshold"] == 0.80
-    assert ica["review_threshold"] == 0.50
+    assert ica["review_threshold"] == 0.60
 
 
 def test_preprocessing_asr_params():
@@ -136,4 +136,9 @@ def test_channels_config():
     assert ch["target_montage"] == "standard_1020"
     assert len(ch["channels_19"]) == 19
     assert "Fp1" in ch["channels_19"]
+    assert len(ch["channels_37"]) == 37
+    assert "FC1" in ch["channels_37"]
+    assert "P1" in ch["channels_37"]
+    # 37ch should be a superset of 19ch
+    assert set(ch["channels_19"]).issubset(set(ch["channels_37"]))
     assert ch["name_mapping"]["T7"] == "T3"
