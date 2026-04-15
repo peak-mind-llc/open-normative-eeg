@@ -134,6 +134,60 @@ ROI_DEFINITIONS = OrderedDict([
 
 ROI_NAMES = list(ROI_DEFINITIONS.keys())
 
+# DK parcel → Brodmann area mapping (approximate, based on standard atlases).
+# Used to derive per-DK-parcel corrected power from BA-level corrected power
+# when --dk-corrected-power is not enabled (default, for performance reasons).
+# Multiple BAs per parcel: averaged. Hemisphere is preserved.
+# TODO: Compute true DK corrected power directly when compute budget allows.
+_DK_TO_BA = {
+    "precentral": ["BA4"],
+    "postcentral": ["BA1", "BA2", "BA3"],
+    "superiorfrontal": ["BA6", "BA8", "BA9"],
+    "caudalmiddlefrontal": ["BA6", "BA8"],
+    "rostralmiddlefrontal": ["BA9", "BA10", "BA46"],
+    "parsopercularis": ["BA44"],
+    "parstriangularis": ["BA45"],
+    "parsorbitalis": ["BA47"],
+    "superiortemporal": ["BA22", "BA41", "BA42"],
+    "middletemporal": ["BA21"],
+    "inferiortemporal": ["BA20"],
+    "superiorparietal": ["BA5", "BA7"],
+    "inferiorparietal": ["BA39", "BA40"],
+    "supramarginal": ["BA40"],
+    "precuneus": ["BA7"],
+    "lateraloccipital": ["BA18", "BA19"],
+    "cuneus": ["BA17", "BA18"],
+    "lingual": ["BA17", "BA18", "BA19"],
+    "pericalcarine": ["BA17"],
+    "fusiform": ["BA37"],
+    "medialorbitofrontal": ["BA11", "BA12"],
+    "lateralorbitofrontal": ["BA47", "BA11"],
+    "caudalanteriorcingulate": ["BA24", "BA32"],
+    "rostralanteriorcingulate": ["BA24", "BA32"],
+    "posteriorcingulate": ["BA23", "BA31"],
+    "isthmuscingulate": ["BA29", "BA30"],
+    "insula": ["BA13"],
+    "frontalpole": ["BA10"],
+    "temporalpole": ["BA38"],
+    "transversetemporal": ["BA41", "BA42"],
+    "entorhinal": ["BA28"],
+    "parahippocampal": ["BA27", "BA35", "BA36"],
+    "paracentral": ["BA4", "BA6"],
+    "bankssts": ["BA22"],  # superior temporal sulcus, near BA22
+}
+
+# Inverse: BA → list of (dk_parcel, weight) where weight = 1/n_BAs_for_that_parcel
+def _build_ba_to_dk():
+    """Build BA → list of (dk_parcel, weight) for aggregation."""
+    inv = {}
+    for dk_parcel, ba_list in _DK_TO_BA.items():
+        weight = 1.0 / len(ba_list)
+        for ba in ba_list:
+            inv.setdefault(ba, []).append((dk_parcel, weight))
+    return inv
+
+_BA_TO_DK = _build_ba_to_dk()
+
 # Method name mapping for mne-connectivity
 _METHOD_MAP = {
     "dwpli": "wpli2_debiased",
@@ -145,6 +199,8 @@ _METHOD_MAP = {
 
 _SLORETA_COORDS_CACHE: Optional[np.ndarray] = None
 _SLORETA_BA_CACHE: Optional[list] = None
+_BA_LABELS_CACHE: dict = {}
+_DK_LABELS_CACHE: dict = {}
 
 
 # ── sLORETA source power ─────────────────────────────────────────────────
@@ -237,6 +293,7 @@ def compute_sloreta_source_power(
     band_power_dict: dict,
     ch_names: list[str],
     n_channels: int = 19,
+    power_key: str = "absolute",
 ) -> dict:
     """Compute sLORETA source power for all frequency bands.
 
@@ -248,6 +305,9 @@ def compute_sloreta_source_power(
         Channel names matching the band power arrays.
     n_channels : int
         19 or 37 — must match the TM.
+    power_key : str
+        Key to extract from band_data (default "absolute", or
+        "corrected_absolute" for specparam periodic-only power).
 
     Returns
     -------
@@ -266,7 +326,7 @@ def compute_sloreta_source_power(
 
     results = {}
     for band_name, band_data in band_power_dict.items():
-        abs_power = band_data.get("absolute")
+        abs_power = band_data.get(power_key)
         if abs_power is None or len(abs_power) != n_channels:
             continue
 
@@ -296,6 +356,78 @@ def compute_sloreta_source_power(
         }
 
     return results
+
+
+# ── BA labels for BA-to-BA connectivity ──────────────────────────────────
+
+def load_ba_labels(n_channels: int = 37) -> tuple[list, list[str]]:
+    """Load pre-computed Brodmann Area labels for the fsaverage surface.
+
+    Parameters
+    ----------
+    n_channels : int
+        19 or 37.
+
+    Returns
+    -------
+    labels : list[mne.Label]
+        One Label per BA.
+    ba_names : list[str]
+        Sanitized BA name per label (e.g. "BA20").
+    """
+    if n_channels in _BA_LABELS_CACHE:
+        return _BA_LABELS_CACHE[n_channels]
+
+    pkl_path = _DATA_DIR / "source" / f"ba_labels_{n_channels}ch.pkl"
+    if not pkl_path.exists():
+        raise FileNotFoundError(
+            f"BA labels not found: {pkl_path}. "
+            f"Run 'python scripts/build_ba_labels.py --channels {n_channels}' first."
+        )
+
+    with open(pkl_path, "rb") as f:
+        data = pickle.load(f)  # noqa: S301
+
+    labels = data["labels"]
+    ba_names = data["ba_names"]
+    _BA_LABELS_CACHE[n_channels] = (labels, ba_names)
+    return labels, ba_names
+
+
+# ── DK parcel labels for full DK connectivity ────────────────────────────
+
+def load_dk_labels(n_channels: int = 37) -> tuple[list, list[str]]:
+    """Load pre-computed individual Desikan-Killiany parcel labels.
+
+    Parameters
+    ----------
+    n_channels : int
+        19 or 37.
+
+    Returns
+    -------
+    labels : list[mne.Label]
+        One Label per DK parcel (68 total).
+    dk_names : list[str]
+        Parcel name per label (e.g. "superiorfrontal-lh").
+    """
+    if n_channels in _DK_LABELS_CACHE:
+        return _DK_LABELS_CACHE[n_channels]
+
+    pkl_path = _DATA_DIR / "source" / f"dk_labels_{n_channels}ch.pkl"
+    if not pkl_path.exists():
+        raise FileNotFoundError(
+            f"DK labels not found: {pkl_path}. "
+            f"Run 'python scripts/build_dk_labels.py --channels {n_channels}' first."
+        )
+
+    with open(pkl_path, "rb") as f:
+        data = pickle.load(f)  # noqa: S301
+
+    labels = data["labels"]
+    dk_names = data["dk_names"]
+    _DK_LABELS_CACHE[n_channels] = (labels, dk_names)
+    return labels, dk_names
 
 
 # ── DICS source connectivity ─────────────────────────────────────────────
@@ -335,6 +467,8 @@ def compute_dics_source_connectivity(
     methods: list[str] | None = None,
     epoch_length: float = 2.0,
     reg: float = 0.05,
+    ba_connectivity: bool = False,
+    dk_connectivity: bool = False,
 ) -> dict:
     """Compute source-space connectivity using DICS beamforming.
 
@@ -352,6 +486,10 @@ def compute_dics_source_connectivity(
         Epoch length in seconds.
     reg : float
         Regularization parameter for DICS.
+    ba_connectivity : bool
+        If True, also compute Brodmann Area-to-BA connectivity.
+    dk_connectivity : bool
+        If True, also compute individual DK parcel-to-parcel connectivity.
 
     Returns
     -------
@@ -359,6 +497,10 @@ def compute_dics_source_connectivity(
         "roi_connectivity": {method: {band: ndarray(18, 18)}}
         "network_connectivity": {method: {band: {"within": dict, "between": dict}}}
         "volume_conduction_flags": list[dict]
+        "ba_connectivity": {method: {band: ndarray(n_ba, n_ba)}} or None
+        "ba_names": list[str] or None
+        "dk_connectivity": {method: {band: ndarray(n_dk, n_dk)}} or None
+        "dk_names": list[str] or None
     """
     from mne.beamformer import apply_dics_epochs, make_dics
     from mne.time_frequency import csd_multitaper
@@ -371,6 +513,18 @@ def compute_dics_source_connectivity(
     # Load forward model
     fwd, src, grouped_labels = load_forward_assets(n_channels)
 
+    # BA labels are no longer extracted directly — BA metrics are derived
+    # from DK parcel aggregation. ba_connectivity flag now triggers DK
+    # extraction internally so BA can be derived.
+    ba_labels, ba_names = None, None  # legacy, unused
+
+    # Load DK parcel labels if either DK or BA connectivity is requested.
+    # DK is the canonical source of truth for both atlases.
+    dk_labels, dk_names = None, None
+    if dk_connectivity or ba_connectivity:
+        dk_labels, dk_names = load_dk_labels(n_channels)
+        logger.info(f"  DK extraction: {len(dk_names)} parcels (canonical for DK + derived BA)")
+
     # Epoch the data
     events = mne.make_fixed_length_events(raw, duration=epoch_length)
     epochs = mne.Epochs(
@@ -382,28 +536,65 @@ def compute_dics_source_connectivity(
         epochs.set_eeg_reference(projection=True, verbose=False)
 
     # DICS beamforming + parcellation per band
+    # Wrap in np.errstate to prevent FloatingPointError from numpy operations
+    # inside MNE (csd_multitaper, make_dics). We use adaptive regularization
+    # to handle ill-conditioned CSD matrices.
     roi_ts = {}
-    for band_name, (fmin, fmax) in bands.items():
-        logger.info(f"  DICS: {band_name} [{fmin}-{fmax} Hz]")
+    dk_ts = {}
+    with np.errstate(all="warn"):
+        for band_name, (fmin, fmax) in bands.items():
+            logger.info(f"  DICS: {band_name} [{fmin}-{fmax} Hz]")
 
-        csd = csd_multitaper(epochs, fmin=fmin, fmax=fmax,
-                             adaptive=True, verbose=False)
-        csd_mean = csd.mean()
-        filters = make_dics(
-            epochs.info, fwd, csd_mean,
-            reg=reg, real_filter=True, pick_ori="max-power",
-            verbose=False,
-        )
-        band_stcs = list(apply_dics_epochs(epochs, filters, verbose=False))
+            try:
+                csd = csd_multitaper(epochs, fmin=fmin, fmax=fmax,
+                                     adaptive=True, verbose=False)
+            except (FloatingPointError, np.linalg.LinAlgError) as exc:
+                logger.warning(f"    {band_name}: CSD failed ({exc}), skipping band")
+                continue
+            csd_mean = csd.mean()
 
-        tc_list = mne.extract_label_time_course(
-            band_stcs, grouped_labels, src,
-            mode="mean_flip", verbose=False,
-        )
-        roi_ts[band_name] = np.array(tc_list)
+            # Adaptive regularization: try default reg, escalate if CSD is
+            # ill-conditioned.
+            band_stcs = None
+            for try_reg in [reg, 0.1, 0.2, 0.5]:
+                try:
+                    filters = make_dics(
+                        epochs.info, fwd, csd_mean,
+                        reg=try_reg, real_filter=True, pick_ori="max-power",
+                        verbose=False,
+                    )
+                    band_stcs = list(apply_dics_epochs(epochs, filters, verbose=False))
+                    if try_reg != reg:
+                        logger.info(f"    {band_name}: succeeded with reg={try_reg}")
+                    break
+                except (FloatingPointError, np.linalg.LinAlgError):
+                    logger.warning(
+                        f"    {band_name}: reg={try_reg} failed (ill-conditioned CSD), "
+                        f"trying higher"
+                    )
+                    continue
 
-        del band_stcs, csd, csd_mean, filters, tc_list
-        gc.collect()
+            if band_stcs is None:
+                logger.error(f"    {band_name}: DICS failed at all reg levels, skipping band")
+                continue
+
+            tc_list = mne.extract_label_time_course(
+                band_stcs, grouped_labels, src,
+                mode="mean_flip", verbose=False,
+            )
+            roi_ts[band_name] = np.array(tc_list)
+
+            # Extract individual DK parcel time courses (canonical for BA + DK)
+            if dk_labels is not None:
+                dk_tc_list = mne.extract_label_time_course(
+                    band_stcs, dk_labels, src,
+                    mode="mean_flip", verbose=False,
+                )
+                dk_ts[band_name] = np.array(dk_tc_list)
+                del dk_tc_list
+
+            del band_stcs, csd, csd_mean, filters, tc_list
+            gc.collect()
 
     # Compute ROI-to-ROI connectivity
     results = {m: {} for m in methods}
@@ -436,6 +627,41 @@ def compute_dics_source_connectivity(
             matrix = np.clip(matrix, 0, 1)
             results[method][band_name] = matrix
 
+    # BA-to-BA connectivity is no longer computed directly — it's derived
+    # from DK parcel connectivity in source_result_to_metrics().
+    ba_results = None
+
+    # Compute individual DK parcel-to-parcel connectivity
+    dk_results = None
+    if dk_labels is not None and dk_ts:
+        dk_results = {m: {} for m in methods}
+        for band_name, data in dk_ts.items():
+            fmin, fmax = bands[band_name]
+
+            dk_info = mne.create_info(
+                ch_names=list(dk_names), sfreq=sfreq, ch_types="misc",
+            )
+            dk_epochs_array = mne.EpochsArray(data, dk_info, verbose=False)
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*no Annotations.*")
+                dk_con = spectral_connectivity_epochs(
+                    dk_epochs_array, method=mne_methods,
+                    fmin=[fmin], fmax=[fmax], faverage=True,
+                    n_jobs=1, verbose=False,
+                )
+
+            if not isinstance(dk_con, list):
+                dk_con = [dk_con]
+
+            for i, method in enumerate(methods):
+                con_data = dk_con[i].get_data(output="dense")
+                matrix = con_data[:, :, 0]
+                matrix = (matrix + matrix.T) / 2
+                np.fill_diagonal(matrix, 0)
+                matrix = np.clip(matrix, 0, 1)
+                dk_results[method][band_name] = matrix
+
     # Volume conduction detection
     vc_flags = []
     if "coh" in results and "dwpli" in results:
@@ -463,6 +689,10 @@ def compute_dics_source_connectivity(
         "roi_connectivity": results,
         "network_connectivity": network_conn,
         "volume_conduction_flags": vc_flags,
+        "ba_connectivity": ba_results,
+        "ba_names": ba_names,
+        "dk_connectivity": dk_results,
+        "dk_names": dk_names,
     }
 
 
@@ -501,6 +731,322 @@ def _aggregate_network_connectivity(results: dict) -> dict:
     return network_conn
 
 
+# ── Source-level specparam (corrected DICS power) ────────────────────────
+
+def _broadband_dics(
+    raw: mne.io.Raw,
+    n_channels: int = 37,
+    epoch_length: float = 2.0,
+    reg: float = 0.05,
+) -> tuple[list, object, float]:
+    """Compute broadband DICS source estimates (shared across label sets).
+
+    Returns
+    -------
+    stcs : list[SourceEstimate]
+        Source time courses per epoch.
+    src : mne.SourceSpaces
+        Source space.
+    sfreq : float
+        Sampling frequency.
+    """
+    from mne.beamformer import apply_dics_epochs, make_dics
+    from mne.time_frequency import csd_multitaper
+
+    fwd, src, _ = load_forward_assets(n_channels)
+
+    events = mne.make_fixed_length_events(raw, duration=epoch_length)
+    epochs = mne.Epochs(
+        raw, events, tmin=0, tmax=epoch_length - 1.0 / raw.info["sfreq"],
+        baseline=None, preload=True, verbose=False,
+    )
+    if not any(p["desc"] == "eeg_ref_proj" for p in epochs.info.get("projs", [])):
+        epochs.set_eeg_reference(projection=True, verbose=False)
+
+    with np.errstate(all="warn"):
+        csd = csd_multitaper(epochs, fmin=1.0, fmax=50.0,
+                             adaptive=True, verbose=False)
+        csd_mean = csd.mean()
+
+        stcs = None
+        for try_reg in [reg, 0.1, 0.2, 0.5]:
+            try:
+                filters = make_dics(
+                    epochs.info, fwd, csd_mean,
+                    reg=try_reg, real_filter=True, pick_ori="max-power",
+                    verbose=False,
+                )
+                stcs = list(apply_dics_epochs(epochs, filters, verbose=False))
+                break
+            except (FloatingPointError, np.linalg.LinAlgError):
+                continue
+
+    if stcs is None:
+        raise RuntimeError("Broadband DICS failed at all regularization levels")
+
+    del csd, csd_mean, filters
+    gc.collect()
+
+    return stcs, src, raw.info["sfreq"]
+
+
+def _specparam_from_stcs(
+    stcs: list,
+    labels: list,
+    label_names: list[str],
+    src,
+    sfreq: float,
+    bands: dict,
+    ap_params: dict,
+) -> dict:
+    """Extract label time courses from precomputed stcs, run specparam.
+
+    Returns
+    -------
+    dict
+        {label_name: {band_name: {"corrected_dics_power": float, "aperiodic_exponent": float}}}
+    """
+    from scipy.signal import welch as scipy_welch
+
+    try:
+        from specparam import SpectralModel
+    except ImportError:
+        return None
+
+    tc_list = mne.extract_label_time_course(
+        stcs, labels, src, mode="mean_flip", verbose=False,
+    )
+    tc_array = np.array(tc_list)  # (n_epochs, n_labels, n_times)
+    n_epochs, n_labels, n_times = tc_array.shape
+    tc_concat = tc_array.transpose(1, 0, 2).reshape(n_labels, -1)
+
+    n_fft = min(int(sfreq * 2), tc_concat.shape[1])
+    freq_range = ap_params.get("freq_range", [2, 40])
+
+    results = {}
+    for li, lname in enumerate(label_names):
+        freqs_psd, psd = scipy_welch(
+            tc_concat[li], fs=sfreq, nperseg=n_fft,
+            noverlap=n_fft // 2, window="hann",
+        )
+
+        sm = SpectralModel(
+            peak_width_limits=ap_params.get("peak_width_limits", [1, 8]),
+            max_n_peaks=ap_params.get("max_n_peaks", 6),
+            min_peak_height=ap_params.get("min_peak_height", 0.1),
+            peak_threshold=ap_params.get("peak_threshold", 2.0),
+            verbose=False,
+        )
+        try:
+            sm.fit(freqs_psd, psd, freq_range)
+            if hasattr(sm, "aperiodic_params_"):
+                exponent = float(sm.aperiodic_params_[-1])
+                offset = float(sm.aperiodic_params_[0])
+            else:
+                ap = sm.results.params.aperiodic
+                exponent = float(ap.params[ap.indices["exponent"]])
+                offset = float(ap.params[ap.indices["offset"]])
+        except Exception:
+            results[lname] = {
+                band_name: {"corrected_dics_power": float("nan"),
+                            "aperiodic_exponent": float("nan")}
+                for band_name in bands
+            }
+            continue
+
+        # Subtract aperiodic in log10 space
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log10_freqs = np.log10(freqs_psd)
+            log10_psd = np.log10(psd)
+        log10_aperiodic = offset - exponent * log10_freqs
+        periodic_log10 = log10_psd - log10_aperiodic
+        periodic_linear = np.maximum(np.power(10.0, periodic_log10), 0.0)
+
+        label_results = {}
+        for band_name, (fmin, fmax) in bands.items():
+            idx = np.where((freqs_psd >= fmin) & (freqs_psd <= fmax))[0]
+            if len(idx) > 0:
+                bp = float(np.trapezoid(periodic_linear[idx], freqs_psd[idx]))
+            else:
+                bp = float("nan")
+            label_results[band_name] = {
+                "corrected_dics_power": bp,
+                "aperiodic_exponent": exponent,
+            }
+        results[lname] = label_results
+
+    return results
+
+
+def compute_dics_corrected_power(
+    raw: mne.io.Raw,
+    labels: list,
+    label_names: list[str],
+    bands: dict,
+    params: dict,
+    n_channels: int = 37,
+    epoch_length: float = 2.0,
+    reg: float = 0.05,
+) -> dict | None:
+    """Compute specparam-corrected source power via broadband DICS.
+
+    Runs broadband DICS beamformer → extracts label time courses →
+    computes Welch PSD per label → runs specparam → subtracts aperiodic →
+    computes periodic-only band power.
+
+    Parameters
+    ----------
+    raw : mne.io.Raw
+        Preprocessed continuous EEG data.
+    labels : list[mne.Label]
+        Labels to extract time courses from (ROIs, BAs, or DK parcels).
+    label_names : list[str]
+        Name per label.
+    bands : dict
+        {band_name: [fmin, fmax]} for band power computation.
+    params : dict
+        Pipeline parameters (uses "spectral.aperiodic" for specparam settings).
+    n_channels : int
+        19 or 37.
+    epoch_length : float
+        Epoch length in seconds for DICS.
+    reg : float
+        Regularization parameter.
+
+    Returns
+    -------
+    dict or None
+        {label_name: {band_name: {"corrected_dics_power": float, "aperiodic_exponent": float}}}
+    """
+    from mne.beamformer import apply_dics_epochs, make_dics
+    from mne.time_frequency import csd_multitaper
+    from scipy.signal import welch as scipy_welch
+
+    try:
+        from specparam import SpectralModel
+    except ImportError:
+        logger.warning("specparam not installed — skipping DICS corrected power")
+        return None
+
+    fwd, src, _ = load_forward_assets(n_channels)
+
+    # Epoch the data
+    events = mne.make_fixed_length_events(raw, duration=epoch_length)
+    epochs = mne.Epochs(
+        raw, events, tmin=0, tmax=epoch_length - 1.0 / raw.info["sfreq"],
+        baseline=None, preload=True, verbose=False,
+    )
+    if not any(p["desc"] == "eeg_ref_proj" for p in epochs.info.get("projs", [])):
+        epochs.set_eeg_reference(projection=True, verbose=False)
+
+    sfreq = raw.info["sfreq"]
+
+    # Broadband DICS (1-50 Hz)
+    logger.info("  Broadband DICS for source-level specparam...")
+    with np.errstate(all="warn"):
+        try:
+            csd = csd_multitaper(epochs, fmin=1.0, fmax=50.0,
+                                 adaptive=True, verbose=False)
+        except (FloatingPointError, np.linalg.LinAlgError) as exc:
+            logger.warning(f"  Broadband CSD failed ({exc}), skipping DICS corrected power")
+            return None
+
+        csd_mean = csd.mean()
+
+        stcs = None
+        for try_reg in [reg, 0.1, 0.2, 0.5]:
+            try:
+                filters = make_dics(
+                    epochs.info, fwd, csd_mean,
+                    reg=try_reg, real_filter=True, pick_ori="max-power",
+                    verbose=False,
+                )
+                stcs = list(apply_dics_epochs(epochs, filters, verbose=False))
+                break
+            except (FloatingPointError, np.linalg.LinAlgError):
+                continue
+
+    if stcs is None:
+        logger.warning("  Broadband DICS failed at all reg levels")
+        return None
+
+    # Extract label time courses
+    tc_list = mne.extract_label_time_course(
+        stcs, labels, src, mode="mean_flip", verbose=False,
+    )
+    tc_array = np.array(tc_list)  # (n_epochs, n_labels, n_times)
+
+    del stcs, csd, csd_mean, filters
+    gc.collect()
+
+    # Concatenate epochs for PSD estimation
+    n_epochs, n_labels, n_times = tc_array.shape
+    # Reshape to (n_labels, n_epochs * n_times)
+    tc_concat = tc_array.transpose(1, 0, 2).reshape(n_labels, -1)
+
+    # Welch PSD per label
+    n_fft = min(int(sfreq * 2), tc_concat.shape[1])
+    ap_params = params.get("spectral", {}).get("aperiodic", {})
+
+    results = {}
+    for li, lname in enumerate(label_names):
+        freqs_psd, psd = scipy_welch(
+            tc_concat[li], fs=sfreq, nperseg=n_fft,
+            noverlap=n_fft // 2, window="hann",
+        )
+
+        # Run specparam
+        sm = SpectralModel(
+            peak_width_limits=ap_params.get("peak_width_limits", [1, 8]),
+            max_n_peaks=ap_params.get("max_n_peaks", 6),
+            min_peak_height=ap_params.get("min_peak_height", 0.1),
+            peak_threshold=ap_params.get("peak_threshold", 2.0),
+            verbose=False,
+        )
+        freq_range = ap_params.get("freq_range", [2, 40])
+        try:
+            # specparam expects log10(power) internally; input in linear
+            sm.fit(freqs_psd, psd, freq_range)
+            if hasattr(sm, "aperiodic_params_"):
+                exponent = float(sm.aperiodic_params_[-1])
+                offset = float(sm.aperiodic_params_[0])
+            else:
+                ap = sm.results.params.aperiodic
+                exponent = float(ap.params[ap.indices["exponent"]])
+                offset = float(ap.params[ap.indices["offset"]])
+        except Exception:
+            results[lname] = {
+                band_name: {"corrected_dics_power": float("nan"),
+                            "aperiodic_exponent": float("nan")}
+                for band_name in bands
+            }
+            continue
+
+        # Subtract aperiodic in log10 space
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log10_freqs = np.log10(freqs_psd)
+            log10_psd = np.log10(psd)
+        log10_aperiodic = offset - exponent * log10_freqs
+        periodic_log10 = log10_psd - log10_aperiodic
+        periodic_linear = np.maximum(np.power(10.0, periodic_log10), 0.0)
+
+        # Band power from periodic PSD
+        label_results = {}
+        for band_name, (fmin, fmax) in bands.items():
+            idx = np.where((freqs_psd >= fmin) & (freqs_psd <= fmax))[0]
+            if len(idx) > 0:
+                bp = float(np.trapezoid(periodic_linear[idx], freqs_psd[idx]))
+            else:
+                bp = float("nan")
+            label_results[band_name] = {
+                "corrected_dics_power": bp,
+                "aperiodic_exponent": exponent,
+            }
+        results[lname] = label_results
+
+    return results
+
+
 # ── Integration helper ────────────────────────────────────────────────────
 
 def analyze_source(
@@ -508,6 +1054,9 @@ def analyze_source(
     spectral_result: dict,
     params: dict,
     n_channels: int = 37,
+    ba_connectivity: bool = False,
+    dk_connectivity: bool = False,
+    dk_corrected_power: bool = False,
 ) -> dict:
     """Run full source analysis: sLORETA power + DICS connectivity.
 
@@ -521,11 +1070,16 @@ def analyze_source(
         Pipeline parameters (uses "connectivity" section for bands).
     n_channels : int
         19 or 37.
+    ba_connectivity : bool
+        If True, also compute BA-to-BA connectivity via DICS.
+    dk_connectivity : bool
+        If True, also compute individual DK parcel-to-parcel connectivity.
 
     Returns
     -------
     dict with keys:
         "source_power": sLORETA results per band
+        "corrected_source_power": periodic-only source power (or None)
         "source_connectivity": DICS connectivity results (or None if failed)
     """
     result = {}
@@ -538,12 +1092,24 @@ def analyze_source(
         result["source_power"] = compute_sloreta_source_power(
             band_power, ch_names, n_channels=n_channels,
         )
+
+        # Corrected (periodic-only) source power via specparam
+        corrected_bp = spectral_result.get("corrected_band_power", {})
+        if corrected_bp:
+            logger.info("Computing corrected sLORETA source power...")
+            result["corrected_source_power"] = compute_sloreta_source_power(
+                corrected_bp, ch_names, n_channels=n_channels,
+                power_key="corrected_absolute",
+            )
+        else:
+            result["corrected_source_power"] = None
     else:
         logger.warning(
             f"Skipping sLORETA: expected {n_channels} channels, "
             f"got {len(ch_names)}"
         )
         result["source_power"] = None
+        result["corrected_source_power"] = None
 
     # DICS source connectivity
     conn_bands = params.get("connectivity", {}).get("bands", {})
@@ -552,15 +1118,66 @@ def analyze_source(
         try:
             conn_methods = params.get("connectivity", {}).get("methods", ["dwpli", "coh"])
             epoch_length = params.get("connectivity", {}).get("epoch_length", 2.0)
-            result["source_connectivity"] = compute_dics_source_connectivity(
-                raw, bands=conn_bands, n_channels=n_channels,
-                methods=conn_methods, epoch_length=epoch_length,
-            )
-        except Exception:
-            logger.error("DICS source connectivity failed", exc_info=True)
+            with np.errstate(all="warn"):
+                result["source_connectivity"] = compute_dics_source_connectivity(
+                    raw, bands=conn_bands, n_channels=n_channels,
+                    methods=conn_methods, epoch_length=epoch_length,
+                    ba_connectivity=ba_connectivity,
+                    dk_connectivity=dk_connectivity,
+                )
+        except BaseException as exc:
+            logger.error("DICS source connectivity failed: %s", exc)
             result["source_connectivity"] = None
     else:
         result["source_connectivity"] = None
+
+    # DICS source-level specparam (corrected DICS power)
+    # DK is the canonical atlas: BA values are derived from DK in
+    # source_result_to_metrics(). We always compute ROI and DK directly.
+    spectral_bands = params.get("spectral", {}).get("bands", {})
+    result["dics_corrected_roi"] = None
+    result["dics_corrected_ba"] = None  # legacy field, never populated directly
+    result["dics_corrected_dk"] = None
+
+    needs_dk = dk_connectivity or ba_connectivity
+    if spectral_bands and conn_bands:
+        logger.info("Computing source-level specparam (corrected DICS power)...")
+        epoch_length = params.get("connectivity", {}).get("epoch_length", 2.0)
+
+        try:
+            stcs, src, sfreq_dics = _broadband_dics(
+                raw, n_channels, epoch_length,
+            )
+        except BaseException as exc:
+            logger.error("Broadband DICS failed: %s", exc)
+            stcs = None
+
+        if stcs is not None:
+            ap_params = params.get("spectral", {}).get("aperiodic", {})
+
+            # ROIs (always)
+            fwd, src_space, grouped_labels = load_forward_assets(n_channels)
+            try:
+                result["dics_corrected_roi"] = _specparam_from_stcs(
+                    stcs, grouped_labels, list(ROI_NAMES), src_space,
+                    sfreq_dics, spectral_bands, ap_params,
+                )
+            except BaseException as exc:
+                logger.error("DICS corrected ROI power failed: %s", exc)
+
+            # DK parcels (canonical for both DK and derived BA)
+            if needs_dk:
+                try:
+                    dk_labels_l, dk_names_l = load_dk_labels(n_channels)
+                    result["dics_corrected_dk"] = _specparam_from_stcs(
+                        stcs, dk_labels_l, dk_names_l, src_space,
+                        sfreq_dics, spectral_bands, ap_params,
+                    )
+                except BaseException as exc:
+                    logger.error("DICS corrected DK power failed: %s", exc)
+
+            del stcs
+            gc.collect()
 
     return result
 
@@ -569,9 +1186,10 @@ def source_result_to_metrics(source_result: dict) -> dict:
     """Convert source analysis results to flat metric dicts for normative aggregation.
 
     Returns a dict keyed by synthetic "channel" names:
-    - "_src_ba_{BA}" for Brodmann area source power
+    - "_src_ba_{BA}" for Brodmann area source power (+ corrected_source_power)
     - "_src_roi_{ROI}" for ROI-level source power peaks
     - "_src_conn_{ROI_A}_{ROI_B}" for ROI-to-ROI connectivity
+    - "_src_ba_conn_{BA_A}_{BA_B}" for BA-to-BA connectivity
     - "_src_net_{network}" for network-level connectivity
 
     These slot into the existing normative.py aggregation without changes.
@@ -591,6 +1209,88 @@ def source_result_to_metrics(source_result: dict) -> dict:
                     metrics[key][band_name] = {}
                 metrics[key][band_name]["source_power"] = power_val
 
+    # Corrected (periodic-only) source power per Brodmann area
+    csp = source_result.get("corrected_source_power")
+    if csp:
+        for band_name, band_data in csp.items():
+            ba_power = band_data.get("ba_mean_power", {})
+            for ba_label, power_val in ba_power.items():
+                key = f"_src_ba_{ba_label}"
+                if key not in metrics:
+                    metrics[key] = {}
+                if band_name not in metrics[key]:
+                    metrics[key][band_name] = {}
+                metrics[key][band_name]["corrected_source_power"] = power_val
+
+    # DICS corrected power (source-level specparam) per ROI
+    dcr = source_result.get("dics_corrected_roi")
+    if dcr:
+        for roi_name, band_dict in dcr.items():
+            key = f"_src_conn_{roi_name}"  # reuse ROI channel prefix
+            for band_name, vals in band_dict.items():
+                if key not in metrics:
+                    metrics[key] = {}
+                if band_name not in metrics[key]:
+                    metrics[key][band_name] = {}
+                metrics[key][band_name]["corrected_dics_power"] = vals.get("corrected_dics_power", float("nan"))
+                metrics[key][band_name]["source_aperiodic_exponent"] = vals.get("aperiodic_exponent", float("nan"))
+
+    # DICS corrected power per DK parcel (canonical, direct from DK labels)
+    dcdk = source_result.get("dics_corrected_dk")
+    if dcdk:
+        for dk_name, band_dict in dcdk.items():
+            key = f"_src_dk_power_{dk_name}"
+            for band_name, vals in band_dict.items():
+                if key not in metrics:
+                    metrics[key] = {}
+                if band_name not in metrics[key]:
+                    metrics[key][band_name] = {}
+                metrics[key][band_name]["corrected_dics_power"] = vals.get("corrected_dics_power", float("nan"))
+                metrics[key][band_name]["source_aperiodic_exponent"] = vals.get("aperiodic_exponent", float("nan"))
+
+        # Derive BA corrected DICS power from DK parcels (aggregation).
+        # For each BA, average the corrected_dics_power of its mapped DK
+        # parcels, weighted by 1/n_BAs_per_parcel (so a parcel split across
+        # 3 BAs contributes 1/3 to each).
+        for ba_short, parcel_weights in _BA_TO_DK.items():
+            ba_key = f"_src_ba_{ba_short}"
+            for hemi in ("lh", "rh"):
+                # Aggregate per band
+                band_values: dict = {}
+                band_exponents: dict = {}
+                total_weight = 0.0
+                for dk_parcel, weight in parcel_weights:
+                    dk_name = f"{dk_parcel}-{hemi}"
+                    if dk_name not in dcdk:
+                        continue
+                    total_weight += weight
+                    for band_name, vals in dcdk[dk_name].items():
+                        cdp = vals.get("corrected_dics_power", float("nan"))
+                        exp = vals.get("aperiodic_exponent", float("nan"))
+                        if not np.isnan(cdp):
+                            band_values.setdefault(band_name, []).append((cdp, weight))
+                        if not np.isnan(exp):
+                            band_exponents.setdefault(band_name, []).append((exp, weight))
+
+                if not band_values:
+                    continue
+
+                # Hemisphere-specific BA key (BA17-lh, BA17-rh, etc.)
+                # Or aggregate both hemispheres? We'll keep them separate.
+                key = f"{ba_key}-{hemi}"
+                if key not in metrics:
+                    metrics[key] = {}
+                for band_name, weighted in band_values.items():
+                    if band_name not in metrics[key]:
+                        metrics[key][band_name] = {}
+                    weights = sum(w for _, w in weighted)
+                    weighted_sum = sum(v * w for v, w in weighted)
+                    metrics[key][band_name]["corrected_dics_power"] = float(weighted_sum / weights)
+                    if band_name in band_exponents:
+                        exp_weights = sum(w for _, w in band_exponents[band_name])
+                        exp_sum = sum(v * w for v, w in band_exponents[band_name])
+                        metrics[key][band_name]["source_aperiodic_exponent"] = float(exp_sum / exp_weights)
+
     # Source connectivity (ROI-to-ROI)
     sc = source_result.get("source_connectivity")
     if sc:
@@ -605,6 +1305,62 @@ def source_result_to_metrics(source_result: dict) -> dict:
                         if band_name not in metrics[key]:
                             metrics[key][band_name] = {}
                         metrics[key][band_name][f"source_{method}"] = float(matrix[i, j])
+
+        # Individual DK parcel-to-parcel connectivity (canonical)
+        dk_conn = sc.get("dk_connectivity")
+        dk_names = sc.get("dk_names", [])
+        dk_idx = {name: i for i, name in enumerate(dk_names)}
+        if dk_conn and dk_names:
+            for method, band_dict in dk_conn.items():
+                for band_name, matrix in band_dict.items():
+                    for i in range(len(dk_names)):
+                        for j in range(i + 1, len(dk_names)):
+                            key = f"_src_dk_{dk_names[i]}_{dk_names[j]}"
+                            if key not in metrics:
+                                metrics[key] = {}
+                            if band_name not in metrics[key]:
+                                metrics[key][band_name] = {}
+                            metrics[key][band_name][f"source_{method}"] = float(matrix[i, j])
+
+            # Derive BA-to-BA connectivity from DK by averaging mapped pairs.
+            # For BA-A → BA-B: collect all (parcel_a, parcel_b) DK pairs where
+            # parcel_a is in BA-A's list and parcel_b is in BA-B's list, then
+            # average those connectivity values.
+            ba_short_list = sorted(_BA_TO_DK.keys())
+            for hemi in ("lh", "rh"):
+                # Build BA → list of dk indices for this hemisphere
+                ba_to_dk_idx = {}
+                for ba_short, parcel_weights in _BA_TO_DK.items():
+                    indices = []
+                    for parcel, _w in parcel_weights:
+                        dk_name = f"{parcel}-{hemi}"
+                        if dk_name in dk_idx:
+                            indices.append(dk_idx[dk_name])
+                    if indices:
+                        ba_to_dk_idx[ba_short] = indices
+
+                ba_in_hemi = sorted(ba_to_dk_idx.keys())
+                for method, band_dict in dk_conn.items():
+                    for band_name, matrix in band_dict.items():
+                        for ai, ba_a in enumerate(ba_in_hemi):
+                            for bi in range(ai + 1, len(ba_in_hemi)):
+                                ba_b = ba_in_hemi[bi]
+                                idxs_a = ba_to_dk_idx[ba_a]
+                                idxs_b = ba_to_dk_idx[ba_b]
+                                pair_vals = []
+                                for ia in idxs_a:
+                                    for ib in idxs_b:
+                                        if ia == ib:
+                                            continue
+                                        pair_vals.append(matrix[ia, ib])
+                                if not pair_vals:
+                                    continue
+                                key = f"_src_ba_conn_{ba_a}-{hemi}_{ba_b}-{hemi}"
+                                if key not in metrics:
+                                    metrics[key] = {}
+                                if band_name not in metrics[key]:
+                                    metrics[key][band_name] = {}
+                                metrics[key][band_name][f"source_{method}"] = float(np.mean(pair_vals))
 
         # Network-level
         net_conn = sc.get("network_connectivity", {})

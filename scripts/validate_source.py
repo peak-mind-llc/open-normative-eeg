@@ -73,6 +73,11 @@ def _source_conn_cells(norms: list[dict]) -> list[dict]:
     return [c for c in norms if c["channel"].startswith("_src_conn_")]
 
 
+def _ba_conn_cells(norms: list[dict]) -> list[dict]:
+    """Filter to BA-to-BA connectivity cells."""
+    return [c for c in norms if c["channel"].startswith("_src_ba_conn_")]
+
+
 def _network_cells(norms: list[dict]) -> list[dict]:
     """Filter to network-level cells."""
     return [c for c in norms if c["channel"].startswith("_src_net_")]
@@ -355,6 +360,77 @@ def check_band_topography(norms: list[dict], min_n: int = 5) -> dict:
     }
 
 
+# ── Check 8: BA connectivity bounded ─────────────────────────────────────
+
+def check_ba_connectivity_bounds(norms: list[dict]) -> dict:
+    """BA-to-BA connectivity values should be in [0, 1]."""
+    bc = _ba_conn_cells(norms)
+    if not bc:
+        return {"status": "SKIP", "reason": "No BA connectivity cells"}
+
+    means = [c["mean"] for c in bc]
+    n_below_zero = sum(1 for m in means if m < -0.01)
+    n_above_one = sum(1 for m in means if m > 1.01)
+    n_non_finite = sum(1 for m in means if not np.isfinite(m))
+
+    return {
+        "status": "PASS" if (n_below_zero == 0 and n_above_one == 0 and n_non_finite == 0) else "FAIL",
+        "total_cells": len(bc),
+        "n_below_zero": n_below_zero,
+        "n_above_one": n_above_one,
+        "n_non_finite": n_non_finite,
+        "mean_range": [round(float(min(means)), 4), round(float(max(means)), 4)],
+        "expected": "All BA connectivity values in [0, 1]",
+    }
+
+
+# ── Check 9: Occipital BA alpha coherence ────────────────────────────────
+
+OCCIPITAL_BA_CONN = {"BA17", "BA18", "BA19"}
+
+
+def check_occipital_ba_alpha_coherence(norms: list[dict], min_n: int = 3) -> dict:
+    """Occipital BAs (17, 18, 19) should show higher within-group connectivity in Alpha."""
+    bc = _ba_conn_cells(norms)
+    if not bc:
+        return {"status": "SKIP", "reason": "No BA connectivity cells"}
+
+    alpha_bc = [c for c in bc if c["band"] == "Alpha" and c["n"] >= min_n]
+    if not alpha_bc:
+        return {"status": "SKIP", "reason": "No Alpha BA connectivity cells with sufficient n"}
+
+    within_occ = []
+    across_occ = []
+    for c in alpha_bc:
+        ch = c["channel"].replace("_src_ba_conn_", "")
+        # BA names are like BA17_BA18
+        parts = ch.split("_")
+        if len(parts) != 2:
+            continue
+        ba_a, ba_b = parts
+        if ba_a in OCCIPITAL_BA_CONN and ba_b in OCCIPITAL_BA_CONN:
+            within_occ.append(c["mean"])
+        elif ba_a in OCCIPITAL_BA_CONN or ba_b in OCCIPITAL_BA_CONN:
+            across_occ.append(c["mean"])
+
+    if not within_occ or not across_occ:
+        return {"status": "SKIP", "reason": "Insufficient occipital BA pairs"}
+
+    mean_within = float(np.mean(within_occ))
+    mean_across = float(np.mean(across_occ))
+    ratio = mean_within / mean_across if mean_across > 0 else float("inf")
+
+    return {
+        "status": "PASS" if ratio > 1.0 else "WARN",
+        "within_occipital_mean": round(mean_within, 4),
+        "across_occipital_mean": round(mean_across, 4),
+        "ratio": round(ratio, 3),
+        "n_within_pairs": len(within_occ),
+        "n_across_pairs": len(across_occ),
+        "expected": "Within-occipital BA connectivity > cross-region in Alpha",
+    }
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def run_validation(norms_dir: Path) -> dict:
@@ -369,9 +445,11 @@ def run_validation(norms_dir: Path) -> dict:
 
     sp_count = len(_source_power_cells(norms))
     sc_count = len(_source_conn_cells(norms))
+    ba_conn_count = len(_ba_conn_cells(norms))
     net_count = len(_network_cells(norms))
     logger.info(f"  Source power cells: {sp_count}")
     logger.info(f"  Source connectivity cells: {sc_count}")
+    logger.info(f"  BA connectivity cells: {ba_conn_count}")
     logger.info(f"  Network cells: {net_count}")
 
     results = {}
@@ -383,6 +461,8 @@ def run_validation(norms_dir: Path) -> dict:
         ("dmn_connectivity", check_dmn_connectivity),
         ("network_hierarchy", check_network_hierarchy),
         ("connectivity_bounds", check_connectivity_bounds),
+        ("ba_connectivity_bounds", check_ba_connectivity_bounds),
+        ("occipital_ba_alpha_coherence", check_occipital_ba_alpha_coherence),
         ("band_topography", check_band_topography),
     ]
 
