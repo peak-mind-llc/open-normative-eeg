@@ -83,25 +83,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "runs" {
 #   3. Job role: assumed by the running container, scoped to our bucket + logs
 # ---------------------------------------------------------------------------
 
-data "aws_iam_policy_document" "batch_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["batch.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "batch_service" {
-  name               = "${var.name_prefix}-batch-service"
-  assume_role_policy = data.aws_iam_policy_document.batch_assume.json
-}
-
-resource "aws_iam_role_policy_attachment" "batch_service_managed" {
-  role       = aws_iam_role.batch_service.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"
-}
+# AWS Batch uses the AWSServiceRoleForBatch service-linked role automatically
+# (created lazily on first Batch API call). We no longer define a custom
+# Batch service role here.
 
 data "aws_iam_policy_document" "ec2_assume" {
   statement {
@@ -227,7 +211,10 @@ resource "aws_cloudwatch_log_group" "jobs" {
 resource "aws_batch_compute_environment" "spot" {
   compute_environment_name = "${var.name_prefix}-spot"
   type                     = "MANAGED"
-  service_role             = aws_iam_role.batch_service.arn
+  # service_role intentionally omitted: AWS Batch now uses the
+  # AWSServiceRoleForBatch service-linked role automatically (created by
+  # AWS on first Batch API call in the account). The legacy custom
+  # service role pattern triggers ecs:DescribeClusters denials.
 
   compute_resources {
     type                = "SPOT"
@@ -244,8 +231,6 @@ resource "aws_batch_compute_environment" "spot" {
     # Set e.g. 60 to cap Spot bids at 60% of on-demand.
     bid_percentage = null
   }
-
-  depends_on = [aws_iam_role_policy_attachment.batch_service_managed]
 }
 
 resource "aws_batch_job_queue" "main" {
