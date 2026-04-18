@@ -244,6 +244,57 @@ resource "aws_batch_job_queue" "main" {
 }
 
 # ---------------------------------------------------------------------------
+# qs-research Batch job definition (sister-project image; reuses everything
+# else: queue, compute env, IAM job role, log group). Image URI overridable
+# at submit time via cloud_recompute.py / open-cloud-run.
+# ---------------------------------------------------------------------------
+
+variable "qs_research_image" {
+  description = "Container image URI for qs-research jobs. Auto-published on main pushes from peak-mind-llc/qs-research."
+  type        = string
+  default     = "ghcr.io/peak-mind-llc/qs-research:latest"
+}
+
+resource "aws_batch_job_definition" "qs_research" {
+  name                  = "qs-research-jd"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+
+  retry_strategy {
+    attempts = 5
+    evaluate_on_exit {
+      on_status_reason = "Host EC2*"
+      action           = "RETRY"
+    }
+    evaluate_on_exit {
+      on_reason = "*"
+      action    = "EXIT"
+    }
+  }
+
+  container_properties = jsonencode({
+    image            = var.qs_research_image
+    vcpus            = var.array_vcpus
+    memory           = var.array_memory_mib
+    jobRoleArn       = aws_iam_role.job.arn
+    environment      = local.common_container_env
+    readonlyRootFilesystem = false
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.jobs.name
+        "awslogs-region"        = data.aws_region.current.name
+        "awslogs-stream-prefix" = "qs-research"
+      }
+    }
+  })
+
+  timeout {
+    attempt_duration_seconds = 7200
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Job definitions — array worker + merge
 # ---------------------------------------------------------------------------
 

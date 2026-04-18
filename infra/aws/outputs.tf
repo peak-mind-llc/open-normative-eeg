@@ -23,6 +23,11 @@ output "batch_merge_job_definition" {
   value       = aws_batch_job_definition.merge.name
 }
 
+output "qs_research_job_definition" {
+  description = "qs-research JD name. Paste into ~/git/qs-research/aws-config.yaml compute.batch_job_definition."
+  value       = aws_batch_job_definition.qs_research.name
+}
+
 output "log_group" {
   description = "CloudWatch log group that Batch jobs write to."
   value       = aws_cloudwatch_log_group.jobs.name
