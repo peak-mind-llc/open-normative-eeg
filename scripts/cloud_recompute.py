@@ -98,11 +98,26 @@ def _count_eligible_subjects(dataset: str, data_dir: Path, channels: int, condit
     return count
 
 
-def _compute_slicing(total: int, requested: int | None, cfg: Config) -> tuple[int, int]:
-    """Return (num_slices, per_slice). Per-slice size is ceil(total/slices)."""
+def _compute_slicing(
+    total: int,
+    requested_slices: int | None,
+    requested_per_slice: int | None,
+    cfg: Config,
+) -> tuple[int, int]:
+    """Return (num_slices, per_slice). Per-slice size is ceil(total/slices).
+
+    If ``requested_per_slice`` is set, it caps the total work: num_slices is
+    derived as ceil(effective_total / per_slice) where effective_total is
+    min(total, requested_slices * requested_per_slice) if slices is also set,
+    else requested_per_slice itself (single slice). Useful for smoke tests.
+    """
     if total <= 0:
         sys.exit("No eligible subjects found. Check --dataset and data-dir.")
-    slices = requested or cfg.default_slices
+    if requested_per_slice is not None:
+        per_slice = max(1, requested_per_slice)
+        slices = requested_slices or 1
+        return slices, per_slice
+    slices = requested_slices or cfg.default_slices
     # Don't over-slice a small dataset.
     max_sensible = max(1, total // max(cfg.min_subjects_per_slice, 1))
     slices = min(slices, max_sensible)
@@ -253,6 +268,10 @@ def main() -> int:
     ap.add_argument("--save-psd", action="store_true")
     ap.add_argument("--slices", type=int, default=None,
                     help=f"Number of array elements. Default from aws-config.yaml.")
+    ap.add_argument("--per-slice", type=int, default=None,
+                    help="Explicit subjects-per-slice. Overrides slice-size math. "
+                         "Useful for smoke tests: --slices 1 --per-slice 2 runs one "
+                         "container on 2 subjects total.")
     ap.add_argument("--data-mirror", default=None,
                     help="Optional s3:// URI for staged raw data (LEMON). "
                          "Defaults to s3://<bucket>/mirrors/<dataset>/ if present.")
@@ -286,7 +305,7 @@ def main() -> int:
             f"Pass --data-dir if your local copy lives elsewhere."
         )
     total = _count_eligible_subjects(args.dataset, data_dir, args.channels, args.condition)
-    slices, per_slice = _compute_slicing(total, args.slices, cfg)
+    slices, per_slice = _compute_slicing(total, args.slices, args.per_slice, cfg)
 
     run_id = _make_run_id(args.dataset, args.channels)
     git_sha = _git_sha()
