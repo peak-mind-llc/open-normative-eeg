@@ -7,6 +7,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 from .config import Config
@@ -16,6 +18,49 @@ from .status import get_status, format_status
 from .logs import get_logs, DEFAULT_LOG_GROUP
 from .download import download_outputs
 from .list_runs import list_runs
+
+
+def _wait_terminal(cfg: Config, run_id: str, has_merge: bool, *, poll_s: int = 15) -> tuple[str | None, str | None]:
+    """Poll until array (and merge, if present) reach terminal state.
+
+    Prints a line on each status transition. Returns (array_status, merge_status);
+    either can be None if that job isn't present in the manifest. Raises on
+    KeyboardInterrupt (Ctrl-C returns current state instead of exploding).
+    """
+    last_a: str | None = None
+    last_m: str | None = None
+    terminal = ("SUCCEEDED", "FAILED")
+    try:
+        while True:
+            st = get_status(cfg, run_id)
+            if st is None:
+                time.sleep(poll_s)
+                continue
+            a_status = st.array.status if st.array else None
+            m_status = st.merge.status if st.merge else None
+            ts = datetime.now().strftime("%H:%M:%S")
+            if a_status and a_status != last_a:
+                suffix = ""
+                if st.array and st.array.array_summary:
+                    suffix = " [" + " ".join(f"{k}={v}" for k, v in st.array.array_summary.items()) + "]"
+                print(f"[{ts}] array: {a_status}{suffix}")
+                last_a = a_status
+            if has_merge and m_status and m_status != last_m:
+                print(f"[{ts}] merge: {m_status}")
+                last_m = m_status
+
+            a_done = a_status in terminal if a_status else False
+            if not has_merge:
+                if a_done:
+                    return a_status, None
+            else:
+                m_done = m_status in terminal if m_status else False
+                if a_done and m_done:
+                    return a_status, m_status
+            time.sleep(poll_s)
+    except KeyboardInterrupt:
+        print("\n(interrupted — job continues on AWS; re-check with `status` or `logs`)", file=sys.stderr)
+        return last_a, last_m
 
 
 def _add_config(p: argparse.ArgumentParser) -> None:
@@ -81,6 +126,20 @@ def cmd_submit(args) -> int:
     print("Track progress:")
     print(f"  python -m open_cloud_run status {run.run_id}")
     print(f"  python -m open_cloud_run logs   {run.run_id} --follow")
+
+    if args.follow:
+        print()
+        print("Following until merge terminal state (Ctrl-C releases — job keeps running):")
+        a_status, m_status = _wait_terminal(
+            cfg, run.run_id, has_merge=bool(run.merge_job_id),
+        )
+        final = m_status if run.merge_job_id else a_status
+        if final == "SUCCEEDED":
+            print(f"\n✓ Run complete: {run.outputs_s3_uri}")
+            return 0
+        print(f"\n✗ Run ended with state={final!r}. Inspect:")
+        print(f"    python -m open_cloud_run logs {run.run_id}")
+        return 1
     return 0
 
 
@@ -190,6 +249,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="Extra tag KEY=VALUE (repeatable).")
     p.add_argument("--enumerate-cwd", default=None,
                    help="Directory the enumerator runs in.")
+    p.add_argument("--follow", action="store_true",
+                   help="After submission, poll Batch until array (and merge, "
+                        "if present) reach a terminal state. Ctrl-C releases "
+                        "the tail without killing the job.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print what would be submitted and exit.")
     p.set_defaults(func=cmd_submit)
