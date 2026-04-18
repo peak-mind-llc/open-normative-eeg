@@ -1,0 +1,39 @@
+# Keep the Docker build context lean.
+
+.git
+.github
+.gitignore
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.claude
+
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist/
+build/
+
+# Big generated artifacts
+norms_output*
+tests/fixtures/reproducibility/*
+*.npz
+*.fif
+
+# Docs aren't needed in the container
+docs/
+CLAUDE.md
+distribute.yaml
+# NOTE: README.md is referenced by pyproject.toml's `readme = ...` and must
+# be present during `pip install -e .` — don't add it here.
+
+# Tests aren't needed either (container only runs the pipeline)
+tests/
+
+# Editor
+.vscode
+.idea
+*.swp
+.DS_Store
