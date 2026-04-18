@@ -9,6 +9,16 @@ CW imports this dict to guarantee identical processing.
 REPORT_PARAMS configures the clinical comparison report — severity labels,
 effect size thresholds, pattern detection, and spatial adjacency for the
 19-channel 10-20 montage.
+
+Determinism note: all stochastic steps (ICA, RANSAC, ICLabel) are seeded
+with random_state=42 here; specparam's fit is scipy curve_fit (LM,
+deterministic). On a single machine the pipeline is bit-identical across
+runs (enforced by tests/test_determinism.py). For bit-identity across
+*different* machines — needed by the AWS-Batch reproducibility gate — the
+container must pin BLAS threads:
+    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+otherwise BLAS reduction order varies with thread count and introduces
+sub-ULP drift. Batch entrypoint sets those env vars.
 """
 
 PIPELINE_PARAMS = {

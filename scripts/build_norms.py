@@ -129,26 +129,96 @@ def _save_subject_result(
     subjects_dir: Path,
     psd_dir: Path | None,
     subjects_for_norms: list,
-):
-    """Checkpoint a processed subject and optionally save PSD data."""
-    spectral = subject_data.pop("_spectral", None)
+) -> list[Path]:
+    """Checkpoint a processed subject and optionally save PSD data.
 
-    save_checkpoint(
+    Returns the list of files written, in output-dir-relative form suitable
+    for mirroring to remote storage.
+    """
+    spectral = subject_data.pop("_spectral", None)
+    written: list[Path] = []
+
+    json_path = save_checkpoint(
         subjects_dir, subject_data["subject_id"],
         subject_data["condition"], subject_data,
     )
+    written.append(json_path)
 
     if psd_dir is not None and spectral is not None:
         psds = spectral.get("psds")
         freqs = spectral.get("freqs")
         ch_names = spectral.get("ch_names", [])
         if psds is not None and freqs is not None:
-            save_psd_checkpoint(
+            psd_path = save_psd_checkpoint(
                 psd_dir, subject_data["subject_id"],
                 subject_data["condition"], freqs, psds, ch_names,
             )
+            written.append(psd_path)
 
     subjects_for_norms.append(subject_data)
+    return written
+
+
+_S3_WARN_EMITTED = False
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Split ``s3://bucket/prefix/...`` into (bucket, prefix)."""
+    if not uri.startswith("s3://"):
+        raise ValueError(f"--checkpoint-sync requires an s3:// URI, got: {uri!r}")
+    rest = uri[len("s3://"):]
+    if "/" in rest:
+        bucket, prefix = rest.split("/", 1)
+    else:
+        bucket, prefix = rest, ""
+    if not bucket:
+        raise ValueError(f"--checkpoint-sync URI missing bucket: {uri!r}")
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    return bucket, prefix
+
+
+def _sync_checkpoint_files(
+    files: list[Path],
+    output_dir: Path,
+    bucket: str,
+    prefix: str,
+    logger: logging.Logger,
+) -> None:
+    """Upload the given checkpoint files to ``s3://bucket/prefix/<relpath>``.
+
+    Failures are logged but do not raise: the local checkpoint is still on
+    disk, and a subsequent container retry will re-sync it.
+    """
+    global _S3_WARN_EMITTED
+    try:
+        import boto3
+    except ImportError:
+        if not _S3_WARN_EMITTED:
+            logger.warning(
+                "--checkpoint-sync requested but boto3 is not installed; "
+                "install with `pip install 'open-normative-eeg[aws]'` or "
+                "`pip install boto3`. Continuing without remote sync."
+            )
+            _S3_WARN_EMITTED = True
+        return
+
+    client = boto3.client("s3")
+    for path in files:
+        try:
+            key = prefix + str(path.relative_to(output_dir))
+        except ValueError:
+            logger.warning(
+                f"checkpoint-sync: {path} not under output dir {output_dir}; skipping"
+            )
+            continue
+        try:
+            client.upload_file(str(path), bucket, key)
+        except Exception as exc:
+            logger.warning(
+                f"checkpoint-sync: failed to upload {path} to s3://{bucket}/{key}: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
 
 def setup_logging(output_dir: Path) -> logging.Logger:
@@ -174,24 +244,27 @@ def setup_logging(output_dir: Path) -> logging.Logger:
     return logger
 
 
-def save_checkpoint(subjects_dir: Path, subject_id: str, condition: str, metrics: dict):
-    """Save a single subject's metrics as a checkpoint JSON."""
+def save_checkpoint(subjects_dir: Path, subject_id: str, condition: str, metrics: dict) -> Path:
+    """Save a single subject's metrics as a checkpoint JSON. Returns the path written."""
     fname = f"{subject_id}_{condition}.json"
     fpath = subjects_dir / fname
     with open(fpath, "w") as f:
         json.dump(metrics, f)
+    return fpath
 
 
 def save_psd_checkpoint(psd_dir: Path, subject_id: str, condition: str,
-                        freqs: np.ndarray, psds: np.ndarray, ch_names: list):
-    """Save a single subject's full PSD array as an .npz checkpoint."""
+                        freqs: np.ndarray, psds: np.ndarray, ch_names: list) -> Path:
+    """Save a single subject's full PSD array as an .npz checkpoint. Returns the path written."""
     fname = f"{subject_id}_{condition}_psd.npz"
+    fpath = psd_dir / fname
     np.savez_compressed(
-        psd_dir / fname,
+        fpath,
         freqs=freqs,
         psds=psds,  # shape (n_channels, n_freqs), V²/Hz
         ch_names=np.array(ch_names),
     )
+    return fpath
 
 
 def load_psd_checkpoint(fpath: Path) -> dict:
@@ -496,6 +569,17 @@ def main():
              "exclusive end). E.g. --subject-range 0:100 for first 100. "
              "Useful for distributing work across machines.",
     )
+    parser.add_argument(
+        "--checkpoint-sync",
+        type=str,
+        default=None,
+        metavar="S3_URI",
+        help="After each subject completes, mirror its checkpoint files to "
+             "the given s3://bucket/prefix/ location. Paths are preserved "
+             "relative to --output (e.g. subjects/sub-01_ec.json). Requires "
+             "boto3 and AWS credentials in the standard SDK credential "
+             "chain. Upload failures are logged but non-fatal.",
+    )
     args = parser.parse_args()
 
 
@@ -691,6 +775,15 @@ def main():
     logger = setup_logging(output_dir)
     save_run_config(output_dir, args)
 
+    # Validate S3 sync target up front so a typo doesn't fail mid-run.
+    sync_target: tuple[str, str] | None = None
+    if args.checkpoint_sync:
+        sync_target = _parse_s3_uri(args.checkpoint_sync)
+        logger.info(
+            f"Checkpoint sync: s3://{sync_target[0]}/{sync_target[1]} "
+            f"(uploads run after each subject completes)"
+        )
+
     # Load existing checkpoints
     checkpoints = load_checkpoints(subjects_dir)
     if checkpoints:
@@ -822,9 +915,13 @@ def main():
                     dk_corrected_power=args.dk_corrected_power,
                     marker_condition=fr.marker_condition,
                 )
-                _save_subject_result(
+                written = _save_subject_result(
                     subject_data, subjects_dir, psd_dir, subjects_for_norms,
                 )
+                if sync_target is not None:
+                    _sync_checkpoint_files(
+                        written, output_dir, sync_target[0], sync_target[1], logger,
+                    )
                 processed += 1
             except Exception:
                 errors += 1
@@ -861,9 +958,13 @@ def main():
                 rate = (i + 1) / elapsed if elapsed > 0 else 0
                 try:
                     subject_data = future.result()
-                    _save_subject_result(
+                    written = _save_subject_result(
                         subject_data, subjects_dir, psd_dir, subjects_for_norms,
                     )
+                    if sync_target is not None:
+                        _sync_checkpoint_files(
+                            written, output_dir, sync_target[0], sync_target[1], logger,
+                        )
                     processed += 1
                     logger.info(
                         f"[{skipped + i + 1}] Done {fr.subject_id} "
