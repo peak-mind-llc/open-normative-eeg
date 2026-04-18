@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""Submit a normative recompute to AWS Batch as an array job + merge job.
+"""Orchestrator for normative recomputes on AWS Batch.
 
-Reads aws-config.yaml for account-specific settings (bucket, queue, job
-definitions), enumerates subjects via the dataset loader to size the
-array, submits both jobs with a merge dependency, and optionally tails
-CloudWatch logs until the merge job finishes.
+Subcommands:
+    submit      Submit a new array+merge recompute run
+    status      Show array+merge status for a run (or all recent runs)
+    logs        Tail CloudWatch logs for a run
+    download    Sync run outputs to a local directory
+    list        List recent runs in the S3 bucket
 
 Example:
-    python scripts/cloud_recompute.py --dataset lemon --channels 37 \
-        --source --ba-connectivity --dk-connectivity --slices 20 --follow
+    python scripts/cloud_recompute.py submit \\
+        --dataset lemon --channels 37 --source \\
+        --slices 20 --follow
 
-Pipeline changes are not made here; this submission layer only drives
-what build_norms.py already does in a container. See docs/aws-deployment.md
-for the full runbook.
+    python scripts/cloud_recompute.py status lemon-37ch-20260418T143459Z
+    python scripts/cloud_recompute.py logs   lemon-37ch-20260418T143459Z --follow
+    python scripts/cloud_recompute.py download lemon-37ch-20260418T143459Z
+
+Reads aws-config.yaml for account-specific settings. Credentials come
+from the standard AWS SDK chain. See docs/aws-deployment.md.
 """
 from __future__ import annotations
 
 import argparse
+import io
 import json
-import os
-import re
 import subprocess
 import sys
 import time
@@ -30,6 +35,8 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+# ─── Config ──────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Config:
@@ -50,6 +57,11 @@ class Config:
 
 def _load_config(path: Path) -> Config:
     import yaml  # deferred so --help works without PyYAML installed
+    if not path.exists():
+        sys.exit(
+            f"Config not found: {path}\n"
+            f"Copy aws-config.example.yaml to aws-config.yaml and edit."
+        )
     data = yaml.safe_load(path.read_text())
     try:
         return Config(
@@ -70,6 +82,20 @@ def _load_config(path: Path) -> Config:
         sys.exit(f"aws-config.yaml is missing required key: {exc}")
 
 
+def _require_boto3():
+    try:
+        import boto3  # noqa: F401
+    except ImportError:
+        sys.exit("boto3 is required: pip install 'open-normative-eeg[aws]'")
+
+
+def _session(cfg: Config):
+    import boto3
+    return boto3.Session(profile_name=cfg.profile, region_name=cfg.region)
+
+
+# ─── Helpers shared across subcommands ───────────────────────────────────
+
 def _git_sha() -> str:
     try:
         out = subprocess.check_output(
@@ -86,7 +112,6 @@ def _make_run_id(dataset: str, channels: int) -> str:
 
 
 def _count_eligible_subjects(dataset: str, data_dir: Path, channels: int, condition: str) -> int:
-    """Enumerate subjects via the loader. Lightweight — no raw data read."""
     from open_normative.datasets import DATASETS
     loader = DATASETS[dataset]()
     loader.n_channels = channels
@@ -104,13 +129,7 @@ def _compute_slicing(
     requested_per_slice: int | None,
     cfg: Config,
 ) -> tuple[int, int]:
-    """Return (num_slices, per_slice). Per-slice size is ceil(total/slices).
-
-    If ``requested_per_slice`` is set, it caps the total work: num_slices is
-    derived as ceil(effective_total / per_slice) where effective_total is
-    min(total, requested_slices * requested_per_slice) if slices is also set,
-    else requested_per_slice itself (single slice). Useful for smoke tests.
-    """
+    """Return (num_slices, per_slice)."""
     if total <= 0:
         sys.exit("No eligible subjects found. Check --dataset and data-dir.")
     if requested_per_slice is not None:
@@ -118,7 +137,6 @@ def _compute_slicing(
         slices = requested_slices or 1
         return slices, per_slice
     slices = requested_slices or cfg.default_slices
-    # Don't over-slice a small dataset.
     max_sensible = max(1, total // max(cfg.min_subjects_per_slice, 1))
     slices = min(slices, max_sensible)
     slices = max(slices, 1)
@@ -142,16 +160,9 @@ def _region_safety_warning(cfg: Config, dataset: str, force: bool) -> None:
             )
 
 
-def _env_overrides(
-    bucket: str,
-    run_id: str,
-    dataset: str,
-    channels: int,
-    condition: str,
-    per_slice: int,
-    workers: int,
-    source_flags: str,
-    data_mirror: str | None,
+def _array_env(
+    bucket: str, run_id: str, dataset: str, channels: int, condition: str,
+    per_slice: int, workers: int, source_flags: str, data_mirror: str | None,
 ) -> list[dict[str, str]]:
     pairs = {
         "MODE": "array",
@@ -169,7 +180,7 @@ def _env_overrides(
     return [{"name": k, "value": v} for k, v in pairs.items()]
 
 
-def _merge_env_overrides(bucket: str, run_id: str) -> list[dict[str, str]]:
+def _merge_env(bucket: str, run_id: str) -> list[dict[str, str]]:
     return [
         {"name": "MODE", "value": "merge"},
         {"name": "BUCKET", "value": bucket},
@@ -177,119 +188,65 @@ def _merge_env_overrides(bucket: str, run_id: str) -> list[dict[str, str]]:
     ]
 
 
-def _submit_array(
-    batch: Any,
-    cfg: Config,
-    run_id: str,
-    dataset: str,
-    channels: int,
-    condition: str,
-    slices: int,
-    per_slice: int,
-    source_flags: str,
-    data_mirror: str | None,
-    git_sha: str,
-) -> str:
-    resp = batch.submit_job(
-        jobName=f"{run_id}-array",
-        jobQueue=cfg.job_queue,
-        jobDefinition=cfg.array_jd,
-        arrayProperties={"size": slices},
-        containerOverrides={
-            "environment": _env_overrides(
-                cfg.bucket, run_id, dataset, channels, condition,
-                per_slice, cfg.workers_per_slice, source_flags, data_mirror,
-            ),
-        },
-        tags={"run_id": run_id, "git_sha": git_sha, "role": "array"},
+def _submission_key(cfg: Config, run_id: str) -> str:
+    return f"{cfg.runs_prefix}{run_id}/_submission.json"
+
+
+def _write_submission_manifest(cfg: Config, run_id: str, manifest: dict) -> None:
+    import boto3
+    s3 = _session(cfg).client("s3")
+    s3.put_object(
+        Bucket=cfg.bucket,
+        Key=_submission_key(cfg, run_id),
+        Body=json.dumps(manifest, indent=2).encode("utf-8"),
+        ContentType="application/json",
     )
-    return resp["jobId"]
 
 
-def _submit_merge(
-    batch: Any,
-    cfg: Config,
-    run_id: str,
-    array_job_id: str,
-    git_sha: str,
-) -> str:
-    resp = batch.submit_job(
-        jobName=f"{run_id}-merge",
-        jobQueue=cfg.job_queue,
-        jobDefinition=cfg.merge_jd,
-        dependsOn=[{"jobId": array_job_id, "type": "SEQUENTIAL"}],
-        containerOverrides={"environment": _merge_env_overrides(cfg.bucket, run_id)},
-        tags={"run_id": run_id, "git_sha": git_sha, "role": "merge"},
-    )
-    return resp["jobId"]
+def _read_submission_manifest(cfg: Config, run_id: str) -> dict | None:
+    s3 = _session(cfg).client("s3")
+    try:
+        resp = s3.get_object(Bucket=cfg.bucket, Key=_submission_key(cfg, run_id))
+    except s3.exceptions.NoSuchKey:
+        return None
+    except Exception as exc:
+        if "NoSuchKey" in str(exc) or "404" in str(exc):
+            return None
+        raise
+    return json.loads(resp["Body"].read())
 
 
-def _wait_for_job(batch: Any, logs: Any, job_id: str, label: str) -> str:
-    """Poll until the job reaches a terminal state; print status transitions. Returns final status."""
+def _describe(batch, job_ids: list[str]) -> list[dict]:
+    if not job_ids:
+        return []
+    return batch.describe_jobs(jobs=job_ids).get("jobs", [])
+
+
+def _wait_terminal(batch, job_id: str, label: str) -> str:
     last = None
     while True:
-        resp = batch.describe_jobs(jobs=[job_id])
-        jobs = resp.get("jobs", [])
+        jobs = _describe(batch, [job_id])
         if not jobs:
-            print(f"[{label}] describe_jobs returned nothing for {job_id}; waiting...", file=sys.stderr)
+            print(f"[{label}] describe_jobs empty for {job_id}; retrying...", file=sys.stderr)
             time.sleep(10)
             continue
-        job = jobs[0]
-        status = job.get("status")
-        if status != last:
-            ts = datetime.now().strftime("%H:%M:%S")
-            print(f"[{ts}] {label}: {status}")
-            last = status
-        if status in ("SUCCEEDED", "FAILED"):
-            if status == "FAILED":
-                print(f"[{label}] failure reason: {job.get('statusReason', 'unknown')}", file=sys.stderr)
-            return status
+        st = jobs[0].get("status")
+        if st != last:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {label}: {st}")
+            last = st
+        if st in ("SUCCEEDED", "FAILED"):
+            if st == "FAILED":
+                print(
+                    f"[{label}] failure reason: {jobs[0].get('statusReason', 'unknown')}",
+                    file=sys.stderr,
+                )
+            return st
         time.sleep(15)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", type=Path, default=REPO_ROOT / "aws-config.yaml",
-                    help="Path to aws-config.yaml (default: repo root)")
-    ap.add_argument("--dataset", required=True, help="Dataset key (lemon, dortmund, ...)")
-    ap.add_argument("--data-dir", type=Path, default=None,
-                    help="Local data dir for enumerating subjects. Defaults to "
-                         "~/Data/EEG/<DATASET>. Used only for slice sizing.")
-    ap.add_argument("--channels", type=int, choices=[19, 37], default=19)
-    ap.add_argument("--condition", choices=["eo", "ec", "both"], default="both")
-    ap.add_argument("--source", action="store_true")
-    ap.add_argument("--ba-connectivity", action="store_true")
-    ap.add_argument("--dk-connectivity", action="store_true")
-    ap.add_argument("--skip-connectivity", action="store_true")
-    ap.add_argument("--save-psd", action="store_true")
-    ap.add_argument("--slices", type=int, default=None,
-                    help=f"Number of array elements. Default from aws-config.yaml.")
-    ap.add_argument("--per-slice", type=int, default=None,
-                    help="Explicit subjects-per-slice. Overrides slice-size math. "
-                         "Useful for smoke tests: --slices 1 --per-slice 2 runs one "
-                         "container on 2 subjects total.")
-    ap.add_argument("--data-mirror", default=None,
-                    help="Optional s3:// URI for staged raw data (LEMON). "
-                         "Defaults to s3://<bucket>/mirrors/<dataset>/ if present.")
-    ap.add_argument("--confirm-cross-region", action="store_true",
-                    help="Acknowledge that a non-us-east-1 region will incur "
-                         "cross-region egress for Dortmund (OpenNeuro) reads.")
-    ap.add_argument("--follow", action="store_true",
-                    help="Tail job status until the merge job terminates.")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="Print what would be submitted and exit.")
-    args = ap.parse_args()
+# ─── submit ──────────────────────────────────────────────────────────────
 
-    try:
-        import boto3  # noqa: F401
-    except ImportError:
-        sys.exit("boto3 is required: pip install 'open-normative-eeg[aws]'")
-
-    if not args.config.exists():
-        sys.exit(
-            f"Config not found: {args.config}\n"
-            f"Copy aws-config.example.yaml to aws-config.yaml and edit."
-        )
+def cmd_submit(args) -> int:
     cfg = _load_config(args.config)
     _region_safety_warning(cfg, args.dataset, args.confirm_cross_region)
 
@@ -297,7 +254,7 @@ def main() -> int:
     if not data_dir.exists():
         sys.exit(
             f"Data dir not found: {data_dir}\n"
-            f"Slice sizing reads the local dataset to enumerate subjects. "
+            f"Slice sizing reads the local dataset to enumerate subjects.\n"
             f"Pass --data-dir if your local copy lives elsewhere."
         )
     total = _count_eligible_subjects(args.dataset, data_dir, args.channels, args.condition)
@@ -306,20 +263,14 @@ def main() -> int:
     run_id = _make_run_id(args.dataset, args.channels)
     git_sha = _git_sha()
 
-    source_flags_parts = []
-    if args.source:
-        source_flags_parts.append("--source")
-    if args.ba_connectivity:
-        source_flags_parts.append("--ba-connectivity")
-    if args.dk_connectivity:
-        source_flags_parts.append("--dk-connectivity")
-    if args.skip_connectivity:
-        source_flags_parts.append("--skip-connectivity")
-    if args.save_psd:
-        source_flags_parts.append("--save-psd")
-    source_flags = " ".join(source_flags_parts)
+    parts = []
+    if args.source:              parts.append("--source")
+    if args.ba_connectivity:     parts.append("--ba-connectivity")
+    if args.dk_connectivity:     parts.append("--dk-connectivity")
+    if args.skip_connectivity:   parts.append("--skip-connectivity")
+    if args.save_psd:            parts.append("--save-psd")
+    source_flags = " ".join(parts)
 
-    # Default mirror URI when the bucket has a staged copy of the dataset.
     data_mirror = args.data_mirror
     if data_mirror is None and args.dataset == "lemon":
         data_mirror = f"s3://{cfg.bucket}/{cfg.mirrors_prefix}lemon/"
@@ -337,41 +288,345 @@ def main() -> int:
         print("(--dry-run; not submitting)")
         return 0
 
-    session = boto3.Session(profile_name=cfg.profile, region_name=cfg.region)
+    session = _session(cfg)
     batch = session.client("batch")
-    logs = session.client("logs")
 
-    # Sanity: confirm the job queue and JDs exist and are ENABLED before submitting.
-    q = batch.describe_job_queues(jobQueues=[cfg.job_queue]).get("jobQueues", [])
-    if not q or q[0].get("state") != "ENABLED":
+    queues = batch.describe_job_queues(jobQueues=[cfg.job_queue]).get("jobQueues", [])
+    if not queues or queues[0].get("state") != "ENABLED":
         sys.exit(f"Job queue {cfg.job_queue!r} not found or not ENABLED. Apply Terraform first.")
 
-    array_id = _submit_array(
-        batch, cfg, run_id, args.dataset, args.channels, args.condition,
-        slices, per_slice, source_flags, data_mirror, git_sha,
+    array_resp = batch.submit_job(
+        jobName=f"{run_id}-array",
+        jobQueue=cfg.job_queue,
+        jobDefinition=cfg.array_jd,
+        arrayProperties={"size": slices},
+        containerOverrides={
+            "environment": _array_env(
+                cfg.bucket, run_id, args.dataset, args.channels, args.condition,
+                per_slice, cfg.workers_per_slice, source_flags, data_mirror,
+            ),
+        },
+        tags={"run_id": run_id, "git_sha": git_sha, "role": "array"},
     )
+    array_id = array_resp["jobId"]
     print(f"submitted array job : {array_id}")
 
-    merge_id = _submit_merge(batch, cfg, run_id, array_id, git_sha)
+    merge_resp = batch.submit_job(
+        jobName=f"{run_id}-merge",
+        jobQueue=cfg.job_queue,
+        jobDefinition=cfg.merge_jd,
+        dependsOn=[{"jobId": array_id, "type": "SEQUENTIAL"}],
+        containerOverrides={"environment": _merge_env(cfg.bucket, run_id)},
+        tags={"run_id": run_id, "git_sha": git_sha, "role": "merge"},
+    )
+    merge_id = merge_resp["jobId"]
     print(f"submitted merge job : {merge_id}")
 
+    manifest = {
+        "run_id": run_id,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "git_sha": git_sha,
+        "region": cfg.region,
+        "dataset": args.dataset,
+        "channels": args.channels,
+        "condition": args.condition,
+        "slices": slices,
+        "per_slice": per_slice,
+        "source_flags": source_flags,
+        "data_mirror": data_mirror,
+        "array_job_id": array_id,
+        "merge_job_id": merge_id,
+    }
+    _write_submission_manifest(cfg, run_id, manifest)
+    print(f"manifest        : s3://{cfg.bucket}/{_submission_key(cfg, run_id)}")
+
     print(
-        f"\nTo view progress:\n"
-        f"  aws --profile {cfg.profile or '<default>'} --region {cfg.region} batch describe-jobs --jobs {array_id} {merge_id}\n"
-        f"  aws --profile {cfg.profile or '<default>'} --region {cfg.region} logs tail /aws/batch/norm-recompute --follow\n"
+        f"\nCheck status:\n"
+        f"  python scripts/cloud_recompute.py status {run_id}\n"
+        f"  python scripts/cloud_recompute.py logs   {run_id} --follow\n"
         f"Outputs will appear at:\n"
         f"  s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}/out/"
     )
 
     if args.follow:
-        status = _wait_for_job(batch, logs, array_id, "array")
-        if status != "SUCCEEDED":
+        if _wait_terminal(batch, array_id, "array") != "SUCCEEDED":
             return 1
-        status = _wait_for_job(batch, logs, merge_id, "merge")
-        if status != "SUCCEEDED":
+        if _wait_terminal(batch, merge_id, "merge") != "SUCCEEDED":
             return 1
         print(f"\n✓ Run complete: s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}/out/")
+
     return 0
+
+
+# ─── status ──────────────────────────────────────────────────────────────
+
+def _print_run_status(cfg: Config, batch, manifest: dict) -> None:
+    run_id = manifest["run_id"]
+    array_id = manifest.get("array_job_id")
+    merge_id = manifest.get("merge_job_id")
+    submitted = manifest.get("submitted_at", "?")
+
+    jobs = _describe(batch, [j for j in [array_id, merge_id] if j])
+    by_id = {j["jobId"]: j for j in jobs}
+
+    print(f"run_id          : {run_id}")
+    print(f"submitted_at    : {submitted}")
+    print(f"dataset         : {manifest.get('dataset')}  channels={manifest.get('channels')}  "
+          f"condition={manifest.get('condition')}")
+    print(f"slices          : {manifest.get('slices')} × per_slice={manifest.get('per_slice')}")
+    for role, jid in [("array", array_id), ("merge", merge_id)]:
+        if not jid:
+            continue
+        j = by_id.get(jid)
+        if not j:
+            print(f"{role:15s} : {jid} (not found in Batch — may have aged out)")
+            continue
+        status = j.get("status")
+        extra = ""
+        ap = j.get("arrayProperties") or {}
+        summary = ap.get("statusSummary") or {}
+        if summary:
+            extra = " [" + " ".join(f"{k}={v}" for k, v in summary.items() if v) + "]"
+        reason = j.get("statusReason")
+        if reason and status in ("FAILED",):
+            extra += f"  reason={reason!r}"
+        print(f"{role:15s} : {status}{extra}")
+    out_uri = f"s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}/out/"
+    print(f"outputs         : {out_uri}")
+
+
+def cmd_status(args) -> int:
+    cfg = _load_config(args.config)
+    session = _session(cfg)
+    batch = session.client("batch")
+
+    if args.run_id:
+        manifest = _read_submission_manifest(cfg, args.run_id)
+        if manifest is None:
+            sys.exit(f"No submission manifest found for run_id={args.run_id!r}")
+        _print_run_status(cfg, batch, manifest)
+        return 0
+
+    runs = _list_runs(cfg, limit=args.limit)
+    if not runs:
+        print("(no runs found)")
+        return 0
+    for i, run_id in enumerate(runs):
+        if i:
+            print("─" * 60)
+        manifest = _read_submission_manifest(cfg, run_id)
+        if manifest is None:
+            print(f"{run_id}  (no manifest)")
+            continue
+        _print_run_status(cfg, batch, manifest)
+    return 0
+
+
+# ─── logs ────────────────────────────────────────────────────────────────
+
+def cmd_logs(args) -> int:
+    cfg = _load_config(args.config)
+    manifest = _read_submission_manifest(cfg, args.run_id)
+    if manifest is None:
+        sys.exit(f"No submission manifest found for run_id={args.run_id!r}")
+
+    session = _session(cfg)
+    batch = session.client("batch")
+    logs = session.client("logs")
+
+    log_group = "/aws/batch/norm-recompute"
+    job_ids = [manifest.get(k) for k in ("array_job_id", "merge_job_id") if manifest.get(k)]
+    jobs = _describe(batch, job_ids)
+
+    # Collect log stream names across parent + array children.
+    streams: list[str] = []
+    for j in jobs:
+        attempts = j.get("attempts") or []
+        for att in attempts:
+            ls = (att.get("container") or {}).get("logStreamName")
+            if ls:
+                streams.append(ls)
+        # For array parents, also list child streams
+        ap = j.get("arrayProperties") or {}
+        if ap.get("size"):
+            children = batch.list_jobs(arrayJobId=j["jobId"]).get("jobSummaryList", [])
+            for c in children:
+                cj = _describe(batch, [c["jobId"]])
+                if not cj:
+                    continue
+                for att in cj[0].get("attempts") or []:
+                    ls = (att.get("container") or {}).get("logStreamName")
+                    if ls:
+                        streams.append(ls)
+
+    streams = list(dict.fromkeys(streams))  # dedupe preserving order
+    if not streams:
+        print("(no log streams yet — job may still be provisioning)", file=sys.stderr)
+        return 0
+    print(f"log group: {log_group}")
+    print(f"streams  : {len(streams)}")
+    for s in streams:
+        print(f"  - {s}")
+    print()
+
+    # Print the last N events per stream, optionally follow.
+    kwargs = {
+        "logGroupName": log_group,
+        "logStreamNames": streams,
+        "limit": 100 if not args.follow else 10000,
+    }
+    paginator = logs.get_paginator("filter_log_events")
+    seen_ids: set[str] = set()
+    while True:
+        for page in paginator.paginate(**kwargs):
+            for ev in page.get("events", []):
+                if ev["eventId"] in seen_ids:
+                    continue
+                seen_ids.add(ev["eventId"])
+                ts = datetime.fromtimestamp(ev["timestamp"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+                print(f"[{ts}] {ev['message'].rstrip()}")
+        if not args.follow:
+            break
+        # On follow: wait a bit, then re-query with the latest timestamp
+        time.sleep(5)
+        kwargs["startTime"] = int(time.time() * 1000) - 30_000
+    return 0
+
+
+# ─── download ────────────────────────────────────────────────────────────
+
+def cmd_download(args) -> int:
+    cfg = _load_config(args.config)
+    out_uri = f"s3://{cfg.bucket}/{cfg.runs_prefix}{args.run_id}/out/"
+    dest = args.output.resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    print(f"syncing {out_uri} → {dest}")
+    rc = subprocess.call([
+        "aws", "s3", "sync", out_uri, str(dest),
+        "--region", cfg.region,
+        "--profile", cfg.profile or "default",
+        "--no-progress",
+    ])
+    if rc != 0:
+        return rc
+    print("\nFiles:")
+    for p in sorted(dest.rglob("*")):
+        if p.is_file():
+            print(f"  {p.relative_to(dest)}  ({p.stat().st_size:,} bytes)")
+    return 0
+
+
+# ─── list ────────────────────────────────────────────────────────────────
+
+def _list_runs(cfg: Config, limit: int = 20) -> list[str]:
+    s3 = _session(cfg).client("s3")
+    paginator = s3.get_paginator("list_objects_v2")
+    prefixes: list[str] = []
+    for page in paginator.paginate(Bucket=cfg.bucket, Prefix=cfg.runs_prefix, Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []) or []:
+            p = cp["Prefix"]
+            run_id = p[len(cfg.runs_prefix):].rstrip("/")
+            if run_id:
+                prefixes.append(run_id)
+    # Most recent first (run IDs sort lexicographically because timestamp is in ISO form).
+    prefixes.sort(reverse=True)
+    return prefixes[:limit]
+
+
+def cmd_list(args) -> int:
+    cfg = _load_config(args.config)
+    runs = _list_runs(cfg, limit=args.limit)
+    if not runs:
+        print("(no runs in bucket)")
+        return 0
+    for run_id in runs:
+        manifest = _read_submission_manifest(cfg, run_id)
+        if manifest is None:
+            print(f"{run_id}  (no manifest)")
+        else:
+            print(f"{run_id}  {manifest.get('dataset')}  {manifest.get('channels')}ch  "
+                  f"{manifest.get('condition')}  "
+                  f"slices={manifest.get('slices')}  "
+                  f"submitted={manifest.get('submitted_at', '?')[:19]}")
+    return 0
+
+
+# ─── CLI ─────────────────────────────────────────────────────────────────
+
+def _add_common(p):
+    p.add_argument("--config", type=Path, default=REPO_ROOT / "aws-config.yaml",
+                   help="Path to aws-config.yaml (default: repo root)")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        prog="cloud_recompute",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    # submit
+    p_sub = sub.add_parser("submit", help="Submit a new recompute run")
+    _add_common(p_sub)
+    p_sub.add_argument("--dataset", required=True, help="Dataset key (lemon, dortmund, ...)")
+    p_sub.add_argument("--data-dir", type=Path, default=None,
+                       help="Local data dir for enumerating subjects. Defaults to "
+                            "~/Data/EEG/<DATASET>.")
+    p_sub.add_argument("--channels", type=int, choices=[19, 37], default=19)
+    p_sub.add_argument("--condition", choices=["eo", "ec", "both"], default="both")
+    p_sub.add_argument("--source", action="store_true")
+    p_sub.add_argument("--ba-connectivity", action="store_true")
+    p_sub.add_argument("--dk-connectivity", action="store_true")
+    p_sub.add_argument("--skip-connectivity", action="store_true")
+    p_sub.add_argument("--save-psd", action="store_true")
+    p_sub.add_argument("--slices", type=int, default=None,
+                       help="Number of array elements. Default from aws-config.yaml.")
+    p_sub.add_argument("--per-slice", type=int, default=None,
+                       help="Explicit subjects-per-slice. Overrides slice-size math.")
+    p_sub.add_argument("--data-mirror", default=None,
+                       help="Optional s3:// URI for staged raw data (LEMON).")
+    p_sub.add_argument("--confirm-cross-region", action="store_true")
+    p_sub.add_argument("--follow", action="store_true",
+                       help="Tail job status until the merge job terminates.")
+    p_sub.add_argument("--dry-run", action="store_true")
+
+    # status
+    p_st = sub.add_parser("status", help="Show job status for a run (or recent runs)")
+    _add_common(p_st)
+    p_st.add_argument("run_id", nargs="?",
+                      help="If omitted, shows the most recent N runs (see --limit).")
+    p_st.add_argument("--limit", type=int, default=5,
+                      help="When no run_id is given, how many recent runs to show (default: 5).")
+
+    # logs
+    p_lg = sub.add_parser("logs", help="Tail CloudWatch logs for a run")
+    _add_common(p_lg)
+    p_lg.add_argument("run_id")
+    p_lg.add_argument("--follow", action="store_true", help="Stream new events until Ctrl-C.")
+
+    # download
+    p_dl = sub.add_parser("download", help="Sync run outputs locally")
+    _add_common(p_dl)
+    p_dl.add_argument("run_id")
+    p_dl.add_argument("--output", type=Path, default=Path("./norm_out"),
+                      help="Local directory to sync into (default: ./norm_out).")
+
+    # list
+    p_ls = sub.add_parser("list", help="List recent runs in the bucket")
+    _add_common(p_ls)
+    p_ls.add_argument("--limit", type=int, default=20)
+
+    args = ap.parse_args()
+
+    _require_boto3()
+
+    if args.cmd == "submit":   return cmd_submit(args)
+    if args.cmd == "status":   return cmd_status(args)
+    if args.cmd == "logs":     return cmd_logs(args)
+    if args.cmd == "download": return cmd_download(args)
+    if args.cmd == "list":     return cmd_list(args)
+    ap.error(f"unknown subcommand: {args.cmd}")
 
 
 if __name__ == "__main__":
