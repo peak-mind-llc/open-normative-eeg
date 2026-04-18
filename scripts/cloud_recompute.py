@@ -154,6 +154,7 @@ def _env_overrides(
     data_mirror: str | None,
 ) -> list[dict[str, str]]:
     pairs = {
+        "MODE": "array",
         "BUCKET": bucket,
         "RUN_ID": run_id,
         "DATASET": dataset,
@@ -166,6 +167,14 @@ def _env_overrides(
     if data_mirror:
         pairs["DATA_MIRROR"] = data_mirror
     return [{"name": k, "value": v} for k, v in pairs.items()]
+
+
+def _merge_env_overrides(bucket: str, run_id: str) -> list[dict[str, str]]:
+    return [
+        {"name": "MODE", "value": "merge"},
+        {"name": "BUCKET", "value": bucket},
+        {"name": "RUN_ID", "value": run_id},
+    ]
 
 
 def _submit_array(
@@ -204,25 +213,12 @@ def _submit_merge(
     array_job_id: str,
     git_sha: str,
 ) -> str:
-    run_prefix = f"s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}"
-    # Override the container command to bypass batch_entrypoint.sh (which
-    # expects AWS_BATCH_JOB_ARRAY_INDEX) and run build_norms.py --merge
-    # directly. Syncs inputs and uploads outputs via aws CLI (already in image).
-    command = [
-        "bash", "-lc",
-        "set -euo pipefail; "
-        f"mkdir -p /work/subjects /work/out; "
-        f"aws s3 sync {run_prefix}/subjects/ /work/subjects/ --no-progress; "
-        f"python /app/scripts/build_norms.py --merge --merge-dir /work/subjects --output /work/out; "
-        f"aws s3 sync /work/out/ {run_prefix}/out/ --no-progress; "
-        f"echo MERGE_DONE",
-    ]
     resp = batch.submit_job(
         jobName=f"{run_id}-merge",
         jobQueue=cfg.job_queue,
         jobDefinition=cfg.merge_jd,
         dependsOn=[{"jobId": array_job_id, "type": "SEQUENTIAL"}],
-        containerOverrides={"command": command},
+        containerOverrides={"environment": _merge_env_overrides(cfg.bucket, run_id)},
         tags={"run_id": run_id, "git_sha": git_sha, "role": "merge"},
     )
     return resp["jobId"]
