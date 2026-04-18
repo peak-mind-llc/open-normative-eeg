@@ -24,6 +24,9 @@ npz_integration_prompt.md
 aws-config.yaml
 .envrc
 
+# Personal run playbook (per-user commands, pre-filled with bucket etc.)
+RUN.md
+
 # Terraform local state & plans (only in infra/aws/)
 infra/aws/.terraform/
 infra/aws/.terraform.lock.hcl
