@@ -51,15 +51,26 @@ gitignored — never commit it.
 
 ## Daily use
 
+The CLI is subcommand-based. Five commands: `submit`, `status`, `logs`, `download`, `list`.
+
 ```bash
 # LEMON, 37ch, full source analysis, 20 parallel slices
-python scripts/cloud_recompute.py \
-    --dataset lemon \
-    --channels 37 \
-    --source --ba-connectivity --dk-connectivity \
-    --save-psd \
-    --slices 20 \
-    --follow
+python scripts/cloud_recompute.py submit \
+    --dataset lemon --channels 37 \
+    --source --ba-connectivity --dk-connectivity --save-psd \
+    --slices 20 --follow
+
+# Check status at any time — reads the _submission.json manifest in S3
+python scripts/cloud_recompute.py status <run_id>
+python scripts/cloud_recompute.py status              # most recent runs
+python scripts/cloud_recompute.py list                # all runs in the bucket
+
+# Logs — array children + merge, dedup'd across attempts
+python scripts/cloud_recompute.py logs <run_id>           # last ~100 events
+python scripts/cloud_recompute.py logs <run_id> --follow  # stream live
+
+# Download merged results locally
+python scripts/cloud_recompute.py download <run_id>       # ./norm_out/ by default
 ```
 
 What happens:
@@ -91,6 +102,16 @@ A new dataset is a **code change**, not a config change. Add a loader in `open_n
 
 The container image needs a rebuild to include the new loader. GH Actions
 publishes on every main-branch push that touches pipeline code.
+
+## Lessons from the initial deployment
+
+- **Don't attach a custom `service_role` to the Batch compute environment.** AWS Batch now uses the `AWSServiceRoleForBatch` service-linked role automatically; passing a custom service role produces `ecs:DescribeClusters` denials and leaves the compute env in `INVALID`. The Terraform module in this repo already omits it.
+- **`aws_batch_compute_environment.compute_resources.instance_type` is a list but uses the singular key.** Don't use `instance_types` (plural) — the provider rejects it.
+- **Array jobs require `size >= 2`.** Smallest smoke test is `--slices 2 --per-slice 1`.
+- **ENTRYPOINT can't be replaced via `containerOverrides.command` in Batch.** Submit-time commands become args to the entrypoint, not a replacement. Use a `MODE=array|merge` env var in the entrypoint to branch.
+- **GHCR packages default to private.** After the first publish, flip the package to Public (GitHub org → Packages → package → Package settings → Change visibility) or Batch can't pull. If your org disables public packages, enable them under **org Settings → Packages**.
+- **Check the bucket's actual region.** `aws s3 ls` lists all buckets globally, but each bucket has a specific region. Terraform's S3 resource errors with `BucketAlreadyOwnedByYou` when your provider region differs from the bucket's region. `aws s3api get-bucket-location --bucket <name>` shows the truth (`null` means us-east-1).
+- **For LEMON, mirror once to your S3 bucket**: LEMON is on GWDG FTP (Germany), not AWS. For Dortmund, HBN, MIPDB — stream directly from `s3://openneuro.org` or `s3://fcp-indi` (IAM already grants the reads). Keep your runs in us-east-1 where these source buckets live to avoid cross-region egress.
 
 ## Troubleshooting
 

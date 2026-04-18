@@ -4,9 +4,12 @@
 
 - `open_normative/` — Core library (parameters, pipeline, preprocessing, spectral, connectivity, channels, normative, compare, source, datasets/)
 - `open_normative/data/` — Pre-computed source localization assets (TMs, forward models, ROI labels, BA labels, DK labels, Brodmann table)
-- `scripts/` — CLI tools (build_norms, distribute, downloaders, QC scripts, validation, visualization)
+- `scripts/` — CLI tools (build_norms, distribute, downloaders, QC scripts, validation, visualization, cloud_recompute)
 - `scripts/normative/` — Dataset-specific QC scripts (dortmund_qc, srm_qc, trt_qc, depress_qc)
 - `tests/` — pytest tests
+- `Dockerfile` + `requirements-pinned.txt` + `scripts/batch_entrypoint.sh` — container image for AWS Batch (published to `ghcr.io/peak-mind-llc/open-normative-eeg` on main pushes)
+- `infra/aws/` — Terraform module: S3 bucket, Batch compute env, queue, IAM, CloudWatch, Budgets
+- `.github/workflows/` — `publish-image.yml` (GHCR build on main), `tests.yml` (pytest on PRs)
 
 ## Testing
 
@@ -159,7 +162,18 @@ For product integration, load only the NPZ files needed:
 - Channel categorization via `_CATEGORY_RULES`: `_pair_` → scalp_connectivity, `_src_dk_` → source_dk, `_src_ba_conn_` → source_ba_connectivity, etc.
 - `metadata.json` indexes all NPZ files with cell counts, unique channels/bands/metrics, and file sizes
 
-## Distributed Processing
+## Cloud Pipeline (AWS Batch)
+
+- `scripts/cloud_recompute.py` — orchestrator with subcommands: `submit`, `status`, `logs`, `download`, `list`. Reads `aws-config.yaml` (gitignored; per-user). Writes a `_submission.json` manifest to S3 at submit time so status/logs/download can find jobs by `run_id` later.
+- `scripts/batch_entrypoint.sh` — container entrypoint. Switches on `MODE=array|merge` env var. Array mode maps `AWS_BATCH_JOB_ARRAY_INDEX` to a `--subject-range` slice and pipes `build_norms.py` with `--checkpoint-sync s3://...`. Merge mode runs `build_norms.py --merge` and uploads `out/`.
+- `infra/aws/` — Terraform module: S3 bucket (runs/ + optional mirrors/), Spot capacity-optimized Batch compute env (uses AWS's service-linked role; do NOT attach a custom `service_role`), queue, two job definitions (array + merge), IAM roles, log group, Budgets, optional SNS.
+- **Reproducibility**: BLAS threads pinned to 1 (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`) in the Dockerfile ENV so outputs are bit-identical across machines. Guarded by `tests/test_determinism.py`.
+- **Data source handling**: LEMON mirrored to `s3://<bucket>/mirrors/lemon/` (not on AWS). Dortmund/HBN/MIPDB can be streamed directly from AWS Open Data buckets (`openneuro.org`, `fcp-indi`) — job role already grants read access. Keep runs in `us-east-1` where these buckets live to avoid cross-region egress.
+- **Batch quirks learned**: AWS Batch `containerOverrides.command` sets CMD, not ENTRYPOINT — the entrypoint script stays in control, use `MODE` env to branch. Array jobs require `size >= 2`. `aws_batch_compute_environment.compute_resources.instance_type` is a list (singular key, plural value) unlike most AWS provider resources.
+- **Cost envelope**: ~$0.60 LEMON full recompute, ~$1 Dortmund. ~$1-2/mo idle storage.
+- **Full runbook**: `docs/aws-deployment.md`. **Design rationale**: `docs/aws-deployment-assessment.md`. **Adapting for non-normative experiments**: `docs/adapting-for-new-experiments.md`.
+
+## Distributed Processing (legacy, SSH-based)
 
 - `scripts/distribute.py` — orchestrates build_norms.py across multiple machines via SSH
 - Config in `distribute.yaml`: machine names, SSH hosts, NFS paths, worker counts

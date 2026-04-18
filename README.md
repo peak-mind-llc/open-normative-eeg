@@ -386,6 +386,48 @@ The merged database recomputes all normative statistics (mean, SD, percentiles, 
 
 ---
 
+## Running on AWS Batch
+
+Rather than tying up a dev machine for a full recompute, `scripts/cloud_recompute.py` offloads the work to **AWS Batch array jobs on EC2 Spot**. One array element per subject-range slice, per-subject checkpoints streamed to S3, merge job aggregates at the end. Typical full LEMON recompute: **~$0.60, ~15-25 minutes**. Idle steady state: ~$1-2/month (S3 + CloudWatch).
+
+**One-time setup:**
+
+```bash
+cp aws-config.example.yaml aws-config.yaml   # edit: bucket, profile, email
+cd infra/aws && cp terraform.tfvars.example terraform.tfvars   # edit bucket_name
+terraform init && terraform apply
+terraform output aws_config_yaml_snippet      # paste into aws-config.yaml
+```
+
+**Daily use:**
+
+```bash
+# Submit a run
+python scripts/cloud_recompute.py submit \
+    --dataset lemon --channels 37 \
+    --source --ba-connectivity --dk-connectivity --save-psd \
+    --slices 20 --follow
+
+# Check status / logs / download outputs for any run
+python scripts/cloud_recompute.py list
+python scripts/cloud_recompute.py status <run_id>
+python scripts/cloud_recompute.py logs   <run_id> --follow
+python scripts/cloud_recompute.py download <run_id>
+```
+
+**Key properties:**
+
+- **Resumable**: per-subject checkpoints survive Spot preemption; a preempted slice loses at most one subject (~2 min rework).
+- **Order-independent merge**: normative aggregation is order-invariant, so slices can complete in any order.
+- **Reproducibility**: BLAS thread pinning in the container (`OMP_NUM_THREADS=1` etc.) makes outputs bit-identical across machines. Enforced by `tests/test_determinism.py`.
+- **Multi-dataset support**: LEMON uses an S3 mirror you stage once (it lives on GWDG FTP). HBN, Dortmund, and MIPDB live on AWS Open Data buckets already in us-east-1 — no mirror needed.
+
+See **[`docs/aws-deployment.md`](docs/aws-deployment.md)** for the full runbook (prereqs, troubleshooting, cost expectations, teardown).
+See **[`docs/aws-deployment-assessment.md`](docs/aws-deployment-assessment.md)** for the design rationale.
+See **[`docs/adapting-for-new-experiments.md`](docs/adapting-for-new-experiments.md)** for how to reuse the infrastructure for non-normative (e.g. ERP) analysis pipelines.
+
+---
+
 ## Compare a Recording Against Norms
 
 Process a single clinical EEG file and compare it against the normative database:
