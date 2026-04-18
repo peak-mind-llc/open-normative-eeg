@@ -30,6 +30,7 @@ datasets = [
 ]
 aws = [
     "boto3>=1.28",
+    "pyyaml>=6.0",
 ]
 dev = [
     "pytest>=7.0",

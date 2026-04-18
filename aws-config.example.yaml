@@ -1,0 +1,57 @@
+# Per-user AWS configuration for cloud_recompute.py.
+#
+# 1. cp aws-config.example.yaml aws-config.yaml
+# 2. Fill in bucket, profile, and (after `terraform apply`) compute resource names.
+# 3. aws-config.yaml is gitignored — it never contains secrets, but it is
+#    specific to your AWS account and shouldn't be committed.
+#
+# Credentials come from the standard AWS SDK credential chain (AWS_PROFILE,
+# ~/.aws/credentials, SSO cache, EC2 instance metadata). This file only
+# names which profile to use; it never stores access keys.
+
+aws:
+  profile: default          # your named profile in ~/.aws/config
+  region: us-east-2         # Ohio. Dortmund (OpenNeuro) lives in us-east-1
+                            # and costs ~$0.02/GB cross-region; that's ~$0.50
+                            # extra per Dortmund run from us-east-2. LEMON
+                            # has no region dependency once mirrored.
+
+storage:
+  # S3 bucket that stores per-run checkpoints, final outputs, and optional
+  # raw-data mirrors. Must already exist (created by Terraform).
+  bucket: CHANGE-ME-my-norm-recomputes
+  runs_prefix: runs/         # per-run artifacts: runs/<run_id>/subjects/...
+  mirrors_prefix: mirrors/   # raw data mirrors: mirrors/lemon/, mirrors/dortmund/
+
+compute:
+  # Populated by `terraform apply` in infra/aws/. Hand-edit only if you
+  # manage the Batch infrastructure outside Terraform.
+  batch_job_queue: norm-recompute-queue
+  batch_job_definition: norm-recompute-jd
+  batch_merge_job_definition: norm-recompute-merge-jd
+
+  # Container image. Default points at the public pre-built image from
+  # the main branch. Override for custom builds.
+  image: ghcr.io/peak-mind-llc/open-normative-eeg:latest
+
+  # Instance fleet for Spot capacity-optimized allocation. Terraform reads
+  # this list into the compute environment's instanceTypes.
+  instance_types:
+    - c7i.2xlarge
+    - c6i.2xlarge
+    - c5.2xlarge
+  max_vcpus: 256
+
+  # Per-subject worker count inside each container. On 8 vCPU / 16 GB
+  # (c*i.2xlarge), 4 workers at ~3 GB/worker is the safe default.
+  workers_per_slice: 4
+
+slicing:
+  # Defaults used when --slices is not given on the submit command. Actual
+  # slice count is max(min(default, subjects/min_subjects_per_slice), 1).
+  default_slices: 20
+  min_subjects_per_slice: 5
+
+notifications:
+  email: null                # if set, SNS sends budget + job failure alerts
+  monthly_budget_usd: 25     # AWS Budgets alert threshold

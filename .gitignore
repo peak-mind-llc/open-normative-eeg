@@ -19,3 +19,14 @@ open_normative/data/source/dk_labels_*.pkl
 cmd
 re-analyze.sh
 npz_integration_prompt.md
+
+# Per-user AWS config (ship aws-config.example.yaml instead)
+aws-config.yaml
+.envrc
+
+# Terraform local state & plans (only in infra/aws/)
+infra/aws/.terraform/
+infra/aws/.terraform.lock.hcl
+infra/aws/terraform.tfstate*
+infra/aws/terraform.tfvars
+infra/aws/*.tfplan

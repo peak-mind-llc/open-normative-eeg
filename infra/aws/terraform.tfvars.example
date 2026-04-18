@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and edit.
+# terraform.tfvars is gitignored.
+
+# Required: must be globally unique across all AWS S3 buckets.
+bucket_name = "CHANGE-ME-norm-recomputes-yourname"
+
+# Defaults are sensible; override only if needed.
+# region             = "us-east-2"
+# profile            = "peak-mind"
+# monthly_budget_usd = 25
+# notification_email = "you@example.com"
