@@ -227,8 +227,8 @@ export REGION="$REGION"
 $RECIPE
 
 # Self-terminate. Instance was launched with
-# --instance-initiated-shutdown-behavior terminate so `shutdown -h now`
-# actually terminates (vs. just stopping).
+# --instance-initiated-shutdown-behavior=terminate so the shutdown
+# call actually terminates the instance (vs. just stopping).
 shutdown -h now
 EOT
 )
@@ -274,7 +274,31 @@ EOT
 if [[ -n "$WAIT_FLAG" ]]; then
     echo ""
     echo "=== waiting for instance termination (--wait) ==="
-    aws_cmd ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
+    # Can't use `ec2 wait instance-terminated` — it treats "pending"
+    # (the normal early-launch state) as a terminal failure. Poll
+    # describe-instances in a loop instead.
+    LAST=""
+    while true; do
+        STATE=$(aws_cmd ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "?")
+        if [[ "$STATE" != "$LAST" ]]; then
+            echo "  $(date +%H:%M:%S) state=$STATE"
+            LAST="$STATE"
+        fi
+        case "$STATE" in
+            terminated) break ;;
+            "?"|"")
+                # describe-instances can return empty briefly after termination.
+                # Wait once more and recheck; if still empty, assume terminated.
+                sleep 10
+                STATE=$(aws_cmd ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+                    --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
+                [[ "$STATE" == "terminated" || -z "$STATE" ]] && break
+                ;;
+        esac
+        sleep 30
+    done
     echo "  terminated. Final S3 state:"
     aws $PROFILE_ARG s3 ls "s3://$BUCKET/mirrors/$DATASET/" --recursive --summarize --region "$REGION" | tail -3
 fi
