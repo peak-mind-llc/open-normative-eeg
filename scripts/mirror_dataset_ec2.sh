@@ -193,7 +193,17 @@ echo "--- pulling LEMON RSEEG data from GWDG ($(date -u)) ---"
 wget -r -np -nH --cut-dirs=3 -R "index.html*" \
      -A "*.vhdr,*.eeg,*.vmrk" \
      "$EEG_URL"
-echo "--- wget done at $(date -u); local size: $(du -sh EEG_Raw_BIDS_ID 2>/dev/null | cut -f1) ---"
+
+# wget's --cut-dirs setting determines where files land; easier to
+# just find EEG_Raw_BIDS_ID/ wherever it ended up. Robust to any
+# future path-depth change on GWDG's side.
+EEG_DIR=$(find . -type d -name "EEG_Raw_BIDS_ID" | head -1)
+if [ -z "$EEG_DIR" ]; then
+    echo "FATAL: wget finished but no EEG_Raw_BIDS_ID/ directory found." >&2
+    find . -maxdepth 3 -type d >&2
+    exit 1
+fi
+echo "--- wget done at $(date -u); files in $EEG_DIR ($(du -sh "$EEG_DIR" | cut -f1)) ---"
 
 echo "--- pulling demographics CSV ---"
 curl -fsSL -o META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv "$META_CSV_URL"
@@ -201,21 +211,22 @@ curl -fsSL -o META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv "$MET
 echo "--- disk after wget ---"
 df -h /
 
-echo "--- upload to s3://${BUCKET}/mirrors/lemon/ (start $(date -u)) ---"
-aws s3 cp META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv \
-    "s3://${BUCKET}/mirrors/lemon/" --region "$REGION" --no-progress
-
-aws s3 sync ./EEG_Raw_BIDS_ID/ \
-    "s3://${BUCKET}/mirrors/lemon/" \
-    --region "$REGION" --no-progress
-echo "--- s3 sync done at $(date -u) ---"
-
-# Fail-fast sanity check: if wget got 0 subjects something went wrong.
-SUBJECTS=$(ls -d EEG_Raw_BIDS_ID/sub-* 2>/dev/null | wc -l)
+# Fail-fast sanity check: if wget got <50 subjects something went wrong.
+SUBJECTS=$(ls -d "$EEG_DIR"/sub-* 2>/dev/null | wc -l)
 if [ "$SUBJECTS" -lt 50 ]; then
     echo "FATAL: expected ~215 LEMON subjects, got $SUBJECTS. wget or disk likely failed." >&2
     exit 1
 fi
+echo "--- $SUBJECTS subjects on disk ---"
+
+echo "--- upload to s3://${BUCKET}/mirrors/lemon/ (start $(date -u)) ---"
+aws s3 cp META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv \
+    "s3://${BUCKET}/mirrors/lemon/" --region "$REGION" --no-progress
+
+aws s3 sync "$EEG_DIR/" \
+    "s3://${BUCKET}/mirrors/lemon/" \
+    --region "$REGION" --no-progress
+echo "--- s3 sync done at $(date -u) ---"
 
 cat > "$WORK/_mirror_complete.json" <<JSON
 {
@@ -232,13 +243,65 @@ echo "--- done with ${SUBJECTS} subjects; self-terminating ---"
 EOT
 }
 
+recipe_flanker() {
+    cat <<'EOT'
+# Flanker ERN (OpenNeuro ds004883) — S3 source, ffa task only.
+# ~75 GB for 172 subjects × ffa task .fdt + .set + metadata.
+# Uses aws s3 sync with --no-sign-request for the public OpenNeuro bucket.
+
+SOURCE="s3://openneuro.org/ds004883"
+DEST="s3://${BUCKET}/mirrors/flanker"
+
+echo "--- mirroring flanker ffa from ${SOURCE} to ${DEST} ---"
+
+# Two-step mirror: download to local disk (anonymous), upload to our bucket (IAM).
+# OpenNeuro only allows anonymous reads (--no-sign-request) for ListObjects.
+# Our bucket only allows authenticated writes (IAM). Can't do both in one sync.
+
+LOCAL="/data/flanker"
+mkdir -p "${LOCAL}"
+
+echo "--- step 1: download from OpenNeuro to local disk ---"
+aws s3 sync "${SOURCE}/" "${LOCAL}/" \
+    --no-sign-request \
+    --region "${REGION}" \
+    --exclude "*" \
+    --include "sub-*/eeg/*task-ffa*" \
+    --include "dataset_description.json" \
+    --include "participants.*" \
+    --include "README" \
+    --no-progress
+
+# Verify download
+FDT_COUNT=$(find "${LOCAL}" -name "*task-ffa_eeg.fdt" | wc -l)
+echo "--- downloaded ${FDT_COUNT} .fdt files to local disk ---"
+
+if [ "${FDT_COUNT}" -lt 150 ]; then
+    echo "FATAL: expected ~172 .fdt files, got ${FDT_COUNT}" >&2
+    exit 1
+fi
+
+echo "--- step 2: upload to our bucket ---"
+aws s3 sync "${LOCAL}/" "${DEST}/" \
+    --region "${REGION}" \
+    --no-progress
+
+# Verify upload
+UPLOADED=$(aws s3 ls "${DEST}/" --recursive --region "${REGION}" | grep "task-ffa_eeg.fdt" | wc -l)
+echo "--- uploaded ${UPLOADED} .fdt files to S3 ---"
+
+echo "--- done with ${UPLOADED} subjects; self-terminating ---"
+EOT
+}
+
 # ── 3. Build user-data + launch ──────────────────────────────────────────
 
 case "$DATASET" in
-    lemon) RECIPE=$(recipe_lemon) ;;
+    lemon)   RECIPE=$(recipe_lemon) ;;
+    flanker) RECIPE=$(recipe_flanker) ;;
     *)
         echo "ERROR: no recipe for dataset=$DATASET" >&2
-        echo "Supported: lemon" >&2
+        echo "Supported: lemon, flanker" >&2
         echo "Add a recipe_${DATASET}() function in $0 to extend." >&2
         exit 2
         ;;
