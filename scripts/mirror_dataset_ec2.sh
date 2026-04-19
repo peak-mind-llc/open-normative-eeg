@@ -180,9 +180,14 @@ for attempt in 1 2 3 4 5; do
 done
 command -v wget || { echo "FATAL: wget not available after 5 attempts" >&2; exit 1; }
 
-cd /tmp
-mkdir -p lemon
-cd lemon
+# /tmp on AL2023 is tmpfs (RAM-backed, ~half of RAM = ~2 GB on t3.medium),
+# which can't hold LEMON's ~65 GB. Use /data on the root EBS volume.
+WORK=/data/lemon
+mkdir -p "$WORK"
+cd "$WORK"
+
+echo "--- disk sanity before wget ---"
+df -h /
 
 echo "--- pulling LEMON RSEEG data from GWDG ($(date -u)) ---"
 wget -r -np -nH --cut-dirs=3 -R "index.html*" \
@@ -193,6 +198,9 @@ echo "--- wget done at $(date -u); local size: $(du -sh EEG_Raw_BIDS_ID 2>/dev/n
 echo "--- pulling demographics CSV ---"
 curl -fsSL -o META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv "$META_CSV_URL"
 
+echo "--- disk after wget ---"
+df -h /
+
 echo "--- upload to s3://${BUCKET}/mirrors/lemon/ (start $(date -u)) ---"
 aws s3 cp META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv \
     "s3://${BUCKET}/mirrors/lemon/" --region "$REGION" --no-progress
@@ -202,16 +210,21 @@ aws s3 sync ./EEG_Raw_BIDS_ID/ \
     --region "$REGION" --no-progress
 echo "--- s3 sync done at $(date -u) ---"
 
-# Done marker for monitoring
+# Fail-fast sanity check: if wget got 0 subjects something went wrong.
 SUBJECTS=$(ls -d EEG_Raw_BIDS_ID/sub-* 2>/dev/null | wc -l)
-cat > /tmp/_mirror_complete.json <<JSON
+if [ "$SUBJECTS" -lt 50 ]; then
+    echo "FATAL: expected ~215 LEMON subjects, got $SUBJECTS. wget or disk likely failed." >&2
+    exit 1
+fi
+
+cat > "$WORK/_mirror_complete.json" <<JSON
 {
   "dataset": "lemon",
   "finished_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "subjects": ${SUBJECTS}
 }
 JSON
-aws s3 cp /tmp/_mirror_complete.json \
+aws s3 cp "$WORK/_mirror_complete.json" \
     "s3://${BUCKET}/mirrors/lemon/_mirror_complete.json" \
     --region "$REGION" --no-progress
 
