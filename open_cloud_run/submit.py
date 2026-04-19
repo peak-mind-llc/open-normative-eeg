@@ -197,13 +197,16 @@ def submit_run(
     if git_sha:
         tags["git_sha"] = git_sha
 
+    # Note: AWS Batch's containerOverrides does NOT accept `image` — the
+    # image is frozen into the job definition. To switch images, register
+    # a new JD (or update an existing one in Terraform). We still track the
+    # image in the submission manifest for provenance.
     array_resp = batch_client.submit_job(
         jobName=f"{run_id}-array",
         jobQueue=cfg.job_queue,
         jobDefinition=cfg.array_jd,
         arrayProperties={"size": n_slices},
         containerOverrides={
-            "image": image,
             "environment": _array_env(cfg, run_id, driver_cmd, outputs_dir),
         },
         tags=tags,
@@ -225,7 +228,6 @@ def submit_run(
             jobDefinition=cfg.merge_jd,
             dependsOn=[{"jobId": array_id, "type": "SEQUENTIAL"}],
             containerOverrides={
-                "image": image,
                 "environment": _merge_env(cfg, run_id, merge_cmd, outputs_dir),
             },
             tags=merge_tags,
