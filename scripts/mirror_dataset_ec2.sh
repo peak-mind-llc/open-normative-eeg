@@ -90,6 +90,10 @@ aws_cmd_iam() { aws $PROFILE_ARG "$@"; }   # IAM is global; no region
 ensure_iam() {
     if aws_cmd_iam iam get-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null 2>&1; then
         echo "  (iam) instance profile $PROFILE_NAME already exists — reusing"
+        # Ensure SSM policy is attached (harmless if already attached; idempotent).
+        aws_cmd_iam iam attach-role-policy \
+            --role-name "$ROLE_NAME" \
+            --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore 2>/dev/null || true
         return
     fi
     echo "  (iam) creating role + instance profile ..."
@@ -135,6 +139,13 @@ EOT
         --policy-name "mirror-s3-write" \
         --policy-document "$POLICY_DOC"
 
+    # Attach SSM managed-instance-core so `aws ssm start-session` works
+    # into the instance for debugging hangs. No extra cost; SSM agent is
+    # pre-installed on Amazon Linux 2023.
+    aws_cmd_iam iam attach-role-policy \
+        --role-name "$ROLE_NAME" \
+        --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
     aws_cmd_iam iam create-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null
     aws_cmd_iam iam add-role-to-instance-profile \
         --instance-profile-name "$PROFILE_NAME" \
@@ -158,37 +169,53 @@ FTP_BASE="https://ftp.gwdg.de/pub/misc/MPI-Leipzig_Mind-Brain-Body-LEMON"
 EEG_URL="${FTP_BASE}/EEG_MPILMBB_LEMON/EEG_Raw_BIDS_ID/"
 META_CSV_URL="${FTP_BASE}/Behavioural_Data_MPILMBB_LEMON/META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv"
 
-yum install -y -q wget
+echo "--- installing wget (AL2023 ships with curl, not wget) ---"
+# Retry up to 5 times in case the package repos aren't ready yet at boot
+for attempt in 1 2 3 4 5; do
+    if dnf install -y wget; then
+        break
+    fi
+    echo "dnf install attempt $attempt failed, retrying in 10s..."
+    sleep 10
+done
+command -v wget || { echo "FATAL: wget not available after 5 attempts" >&2; exit 1; }
 
 cd /tmp
 mkdir -p lemon
 cd lemon
 
-echo "=== pulling LEMON RSEEG data from GWDG ($(date -u)) ==="
+echo "--- pulling LEMON RSEEG data from GWDG ($(date -u)) ---"
 wget -r -np -nH --cut-dirs=3 -R "index.html*" \
      -A "*.vhdr,*.eeg,*.vmrk" \
-     -q --show-progress \
      "$EEG_URL"
+echo "--- wget done at $(date -u); local size: $(du -sh EEG_Raw_BIDS_ID 2>/dev/null | cut -f1) ---"
 
-echo "=== pulling demographics CSV ==="
-wget -q -O META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv "$META_CSV_URL"
+echo "--- pulling demographics CSV ---"
+curl -fsSL -o META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv "$META_CSV_URL"
 
-echo "=== upload to s3://${BUCKET}/mirrors/lemon/ ==="
+echo "--- upload to s3://${BUCKET}/mirrors/lemon/ (start $(date -u)) ---"
 aws s3 cp META_File_IDs_Age_Gender_Education_Drug_Smoke_SKID_LEMON.csv \
     "s3://${BUCKET}/mirrors/lemon/" --region "$REGION" --no-progress
 
 aws s3 sync ./EEG_Raw_BIDS_ID/ \
     "s3://${BUCKET}/mirrors/lemon/" \
     --region "$REGION" --no-progress
+echo "--- s3 sync done at $(date -u) ---"
 
 # Done marker for monitoring
-echo "{\"dataset\":\"lemon\",\"finished_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"subjects\":$(ls -d EEG_Raw_BIDS_ID/sub-* 2>/dev/null | wc -l)}" \
-    > /tmp/_mirror_complete.json
+SUBJECTS=$(ls -d EEG_Raw_BIDS_ID/sub-* 2>/dev/null | wc -l)
+cat > /tmp/_mirror_complete.json <<JSON
+{
+  "dataset": "lemon",
+  "finished_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "subjects": ${SUBJECTS}
+}
+JSON
 aws s3 cp /tmp/_mirror_complete.json \
     "s3://${BUCKET}/mirrors/lemon/_mirror_complete.json" \
     --region "$REGION" --no-progress
 
-echo "=== done; self-terminating ==="
+echo "--- done with ${SUBJECTS} subjects; self-terminating ---"
 EOT
 }
 
@@ -217,14 +244,33 @@ echo "  ami: $AMI_ID"
 
 USER_DATA=$(cat <<EOT
 #!/bin/bash
-set -e
-exec > /var/log/mirror.log 2>&1
+# Mirror-helper user-data. Output goes to EC2 console (cloud-init captures
+# stdout/stderr and writes it to /var/log/cloud-init-output.log, which is
+# visible externally via \`aws ec2 get-console-output\`) AND teed to
+# /var/log/mirror.log on disk for SSM-based inspection.
+#
+# set -x so every command is echoed. set -e is NOT used — each step that
+# might fail has explicit error handling so a partial failure still emits
+# an ERROR line to console output instead of silently exiting.
+
+set -x
+exec > >(tee -a /var/log/mirror.log) 2>&1
+
+echo "MIRROR_START ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Env available inside the recipe
 export BUCKET="$BUCKET"
 export REGION="$REGION"
 
-$RECIPE
+if ! ( $RECIPE ); then
+    echo "MIRROR_FAILED recipe exited non-zero"
+    # Stay alive for 2 minutes so SSM-attached users can inspect
+    sleep 120
+    shutdown -h now
+    exit 1
+fi
+
+echo "MIRROR_DONE ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Self-terminate. Instance was launched with
 # --instance-initiated-shutdown-behavior=terminate so the shutdown
