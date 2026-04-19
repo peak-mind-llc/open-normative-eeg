@@ -242,39 +242,51 @@ AMI_ID=$(aws_cmd ec2 describe-images \
     --query 'sort_by(Images, &CreationDate)[-1].ImageId' --output text)
 echo "  ami: $AMI_ID"
 
+# Base64-encode the recipe so we don't have to worry about heredoc
+# delimiter collisions when embedding it in the outer user-data heredoc.
+RECIPE_B64=$(printf '%s' "$RECIPE" | base64)
+
 USER_DATA=$(cat <<EOT
 #!/bin/bash
-# Mirror-helper user-data. Output goes to EC2 console (cloud-init captures
-# stdout/stderr and writes it to /var/log/cloud-init-output.log, which is
-# visible externally via \`aws ec2 get-console-output\`) AND teed to
-# /var/log/mirror.log on disk for SSM-based inspection.
-#
-# set -x so every command is echoed. set -e is NOT used — each step that
-# might fail has explicit error handling so a partial failure still emits
-# an ERROR line to console output instead of silently exiting.
+# Mirror-helper user-data. Output goes to cloud-init's capture
+# (/var/log/cloud-init-output.log on the instance + EC2 console output
+# via \`aws ec2 get-console-output\`). On failure we also upload the
+# cloud-init log to S3 for post-mortem and keep the instance alive 30
+# minutes so SSM can inspect.
 
 set -x
-exec > >(tee -a /var/log/mirror.log) 2>&1
-
 echo "MIRROR_START ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# Env available inside the recipe
 export BUCKET="$BUCKET"
 export REGION="$REGION"
 
-if ! ( $RECIPE ); then
-    echo "MIRROR_FAILED recipe exited non-zero"
-    # Stay alive for 2 minutes so SSM-attached users can inspect
-    sleep 120
-    shutdown -h now
-    exit 1
+# Materialize the recipe on disk and execute it. Base64 → file avoids
+# any heredoc-nesting or variable-expansion accidents.
+echo '$RECIPE_B64' | base64 -d > /tmp/recipe.sh
+chmod +x /tmp/recipe.sh
+
+bash -x /tmp/recipe.sh
+RC=\$?
+
+if [ "\$RC" -eq 0 ]; then
+    echo "MIRROR_DONE ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+else
+    echo "MIRROR_FAILED rc=\$RC ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Post-mortem: upload cloud-init output + our recipe for inspection.
+    FAIL_STAMP=\$(date -u +%Y%m%dT%H%M%SZ)
+    aws s3 cp /var/log/cloud-init-output.log \\
+        "s3://$BUCKET/mirrors/$DATASET/_failed_\${FAIL_STAMP}_cloud-init-output.log" \\
+        --region "$REGION" --no-progress 2>&1 || true
+    aws s3 cp /tmp/recipe.sh \\
+        "s3://$BUCKET/mirrors/$DATASET/_failed_\${FAIL_STAMP}_recipe.sh" \\
+        --region "$REGION" --no-progress 2>&1 || true
+    # Stay alive 30 min so SSM can attach.
+    echo "Instance will self-terminate in 30 minutes. SSM in via:"
+    echo "  aws ssm start-session --target \$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+    sleep 1800
 fi
 
-echo "MIRROR_DONE ts=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-# Self-terminate. Instance was launched with
-# --instance-initiated-shutdown-behavior=terminate so the shutdown
-# call actually terminates the instance (vs. just stopping).
+# Instance-initiated-shutdown-behavior=terminate, so this terminates.
 shutdown -h now
 EOT
 )
