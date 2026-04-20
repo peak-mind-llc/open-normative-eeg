@@ -141,6 +141,10 @@ def _compute_slicing(
     slices = min(slices, max_sensible)
     slices = max(slices, 1)
     per_slice = (total + slices - 1) // slices
+    # Shrink slice count so the tail slice is non-empty. With per_slice=14
+    # and total=430 we want 31 slices (last one has 10 subjects), not 32
+    # (where the 32nd would cover 434..447 = zero real subjects and fail).
+    slices = (total + per_slice - 1) // per_slice
     return slices, per_slice
 
 

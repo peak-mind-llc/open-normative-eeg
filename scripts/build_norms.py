@@ -21,10 +21,12 @@ Usage:
 import argparse
 import json
 import logging
+import os
+import subprocess
 import sys
 import time
 import traceback
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -445,6 +447,104 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
     logger.info(f"  Subjects per cell: {n_arr.tolist()}")
 
 
+def _run_subject_subprocess(
+    fr,
+    channels: int,
+    skip_connectivity: bool,
+    source: bool,
+    ba_connectivity: bool,
+    dk_connectivity: bool,
+    dk_corrected_power: bool,
+    subjects_dir: Path,
+    psd_dir: Path | None,
+    params_override: dict | None,
+    subject_timeout: int,
+) -> dict:
+    """Process one subject in a fresh child Python interpreter.
+
+    Full-process isolation: an OOM-killed worker kills only itself, never
+    poisons sibling workers. The parent thread waits on subprocess.run,
+    catches non-zero exit cleanly, and the ThreadPoolExecutor never enters
+    a broken state.
+    """
+    spec = {
+        "filepath": str(fr.filepath),
+        "subject_id": fr.subject_id,
+        "age": fr.age,
+        "sex": fr.sex,
+        "condition": fr.condition,
+        "n_channels": channels,
+        "skip_connectivity": skip_connectivity,
+        "source": source,
+        "ba_connectivity": ba_connectivity,
+        "dk_connectivity": dk_connectivity,
+        "dk_corrected_power": dk_corrected_power,
+        "marker_condition": fr.marker_condition,
+        "subjects_dir": str(subjects_dir),
+        "psd_dir": str(psd_dir) if psd_dir is not None else None,
+        "params_override": params_override,
+    }
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    completed = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()),
+         "--worker-subject", json.dumps(spec)],
+        capture_output=True,
+        text=True,
+        timeout=subject_timeout,
+        env=env,
+    )
+    if completed.returncode != 0:
+        tail = (completed.stderr or "").strip().splitlines()[-8:]
+        raise RuntimeError(
+            f"worker exit={completed.returncode}; tail:\n"
+            + "\n".join(tail) if tail else f"worker exit={completed.returncode}"
+        )
+    # Worker wrote the checkpoint JSON; read it back so the parent has the
+    # same subject_data it would have received from an in-process call.
+    ckpt = subjects_dir / f"{fr.subject_id}_{fr.condition}.json"
+    with open(ckpt) as f:
+        return json.load(f)
+
+
+def _worker_subject_main(spec_json: str) -> int:
+    """Entry point for ``--worker-subject``: process one subject and exit.
+
+    The spec is a JSON dict matching the kwargs of _process_one_subject
+    plus output paths. Runs _process_one_subject + _save_subject_result
+    inline; errors print to stderr and exit non-zero. S3 sync of the
+    checkpoint is handled by the parent (per-file boto3 upload), not here.
+    """
+    try:
+        spec = json.loads(spec_json)
+        subjects_dir = Path(spec["subjects_dir"])
+        subjects_dir.mkdir(parents=True, exist_ok=True)
+        psd_dir = Path(spec["psd_dir"]) if spec.get("psd_dir") else None
+        if psd_dir is not None:
+            psd_dir.mkdir(parents=True, exist_ok=True)
+
+        subject_data = _process_one_subject(
+            filepath=spec["filepath"],
+            subject_id=spec["subject_id"],
+            age=spec["age"],
+            sex=spec["sex"],
+            condition=spec["condition"],
+            n_channels=spec["n_channels"],
+            params=spec.get("params_override"),
+            skip_connectivity=spec["skip_connectivity"],
+            source=spec["source"],
+            ba_connectivity=spec["ba_connectivity"],
+            dk_connectivity=spec["dk_connectivity"],
+            dk_corrected_power=spec["dk_corrected_power"],
+            marker_condition=spec.get("marker_condition"),
+        )
+        _save_subject_result(subject_data, subjects_dir, psd_dir, [])
+        return 0
+    except BaseException:
+        traceback.print_exc(file=sys.stderr)
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build normative EEG distributions from a public dataset.",
@@ -580,7 +680,28 @@ def main():
              "boto3 and AWS credentials in the standard SDK credential "
              "chain. Upload failures are logged but non-fatal.",
     )
+    parser.add_argument(
+        "--subject-timeout",
+        type=int,
+        default=1800,
+        help="Per-subject wall-clock timeout in seconds for isolated-subprocess "
+             "mode (default: 1800 = 30 min). A runaway subject is SIGTERM'd and "
+             "counted as an error; the rest of the slice proceeds.",
+    )
+    # Hidden: per-subject worker entry point. When set, this invocation
+    # processes exactly one subject (spec passed as JSON) and exits.
+    # Used internally by the parallel driver for OOM isolation.
+    parser.add_argument(
+        "--worker-subject",
+        type=str,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
+
+    # Dispatch to the single-subject worker if this is a child process.
+    if args.worker_subject is not None:
+        sys.exit(_worker_subject_main(args.worker_subject))
 
 
     # --ba-connectivity / --dk-connectivity imply --source
@@ -886,6 +1007,14 @@ def main():
         + (f", {qc_skipped} excluded by QC" if qc_skipped else "")
     )
 
+    # Empty-range short-circuit: cloud_recompute.py sizes N slices across the
+    # dataset and the tail slice may cover an out-of-range index. That is not
+    # a failure — exit 0 so Batch doesn't mark the slice FAILED and block
+    # merge via SEQUENTIAL dependsOn.
+    if not todo and skipped == 0:
+        logger.info("Nothing to do in this subject range; exiting 0.")
+        sys.exit(0)
+
     processed = 0
     errors = 0
     start_time = time.time()
@@ -930,25 +1059,30 @@ def main():
                     + traceback.format_exc()
                 )
     else:
-        # ── Parallel processing ────────────────────────────────────────
-        logger.info(f"Processing with {args.jobs} parallel workers")
-        with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+        # ── Parallel processing (subprocess-per-subject isolation) ─────
+        # Each subject runs in a fresh Python interpreter via subprocess.run.
+        # An OOM-killed worker only kills itself; siblings keep processing.
+        # ThreadPoolExecutor just supervises the subprocesses — no pickle,
+        # no shared interpreter state, no BrokenProcessPool.
+        logger.info(
+            f"Processing with {args.jobs} isolated-subprocess workers "
+            f"(per-subject timeout {args.subject_timeout}s)"
+        )
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             futures = {
                 pool.submit(
-                    _process_one_subject,
-                    filepath=str(fr.filepath),
-                    subject_id=fr.subject_id,
-                    age=fr.age,
-                    sex=fr.sex,
-                    condition=fr.condition,
-                    n_channels=args.channels,
-                    params=params_override,
-                    skip_connectivity=args.skip_connectivity,
-                    source=args.source,
-                    ba_connectivity=args.ba_connectivity,
-                    dk_connectivity=args.dk_connectivity,
-                    dk_corrected_power=args.dk_corrected_power,
-                    marker_condition=fr.marker_condition,
+                    _run_subject_subprocess,
+                    fr,
+                    args.channels,
+                    args.skip_connectivity,
+                    args.source,
+                    args.ba_connectivity,
+                    args.dk_connectivity,
+                    args.dk_corrected_power,
+                    subjects_dir,
+                    psd_dir,
+                    params_override,
+                    args.subject_timeout,
                 ): fr
                 for fr in todo
             }
@@ -958,9 +1092,14 @@ def main():
                 rate = (i + 1) / elapsed if elapsed > 0 else 0
                 try:
                     subject_data = future.result()
-                    written = _save_subject_result(
-                        subject_data, subjects_dir, psd_dir, subjects_for_norms,
-                    )
+                    # Worker already wrote the JSON + PSD. Accumulate here;
+                    # the PSD sidecar (if any) is colocated next to the JSON.
+                    written = [subjects_dir / f"{fr.subject_id}_{fr.condition}.json"]
+                    if psd_dir is not None:
+                        psd_path = psd_dir / f"{fr.subject_id}_{fr.condition}_psd.npz"
+                        if psd_path.exists():
+                            written.append(psd_path)
+                    subjects_for_norms.append(subject_data)
                     if sync_target is not None:
                         _sync_checkpoint_files(
                             written, output_dir, sync_target[0], sync_target[1], logger,
@@ -969,6 +1108,12 @@ def main():
                     logger.info(
                         f"[{skipped + i + 1}] Done {fr.subject_id} "
                         f"({fr.condition}) [{rate * 60:.1f} subj/min]"
+                    )
+                except subprocess.TimeoutExpired:
+                    errors += 1
+                    logger.error(
+                        f"TIMEOUT: {fr.subject_id} ({fr.condition}) "
+                        f"exceeded {args.subject_timeout}s"
                     )
                 except Exception:
                     errors += 1
