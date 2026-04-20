@@ -388,9 +388,50 @@ The merged database recomputes all normative statistics (mean, SD, percentiles, 
 
 ## Running on AWS Batch
 
-Rather than tying up a dev machine for a full recompute, `scripts/cloud_recompute.py` offloads the work to **AWS Batch array jobs on EC2 Spot**. One array element per subject-range slice, per-subject checkpoints streamed to S3, merge job aggregates at the end. Typical full LEMON recompute: **~$0.60, ~15-25 minutes**. Idle steady state: ~$1-2/month (S3 + CloudWatch).
+### Why (we strongly recommend it — especially for development)
 
-**One-time setup:**
+A full normative recompute with the source-analysis pipeline enabled (DICS beamforming, 68 DK parcels × 11 bands of specparam fits, 2,278 DK-DK connectivity pairs, etc.) is **not realistic on a development laptop**. For the 215-subject LEMON dataset, a sequential single-machine run takes **4–6 hours** — and every parameter tweak, new dataset, or pipeline change means starting over.
+
+That makes local computation a serious drag on iteration speed: the feedback loop for "change one param, see what the norm looks like" is measured in hours. Research velocity dies in that kind of loop.
+
+**AWS Batch on EC2 Spot changes the math completely.** The same LEMON recompute finishes in **~35 minutes for about $2**, on infrastructure that costs ~$1–2/month when idle. A full 608-subject Dortmund recompute runs for about **$4–5**. You can iterate on the pipeline, rebuild the full norm, and have it back in S3 before coffee finishes brewing.
+
+That's the reason these scripts exist. `scripts/cloud_recompute.py` + `infra/aws/` + the pre-built container image give you a one-command path from "I want to rebuild the norm" to "the merged `norms.json` is in S3." Most of the complexity (Spot preemption handling, per-subject checkpointing, selective data sync, determinism pinning, IAM wiring) is already solved.
+
+| Component | What we do | Why |
+|---|---|---|
+| **EC2 Spot via Batch array jobs** | Pay ~30% of on-demand for the same compute | Subjects are independent → preemption just costs ~2 min of rework per interruption |
+| **Per-subject checkpoint → S3** | Each subject's JSON+PSD streams to S3 the moment it finishes | A preempted slice loses at most one subject in-flight, not the whole slice |
+| **Selective per-slice data sync** | Each container pulls only its subjects via a pre-written manifest | ~15× faster data-sync phase vs. pulling the full mirror on every container |
+| **Subprocess isolation per subject** | Each subject runs in its own fresh Python interpreter | An OOM-killed worker kills only one subject; siblings keep processing |
+| **Order-independent merge** | The merge job reads subjects from S3 in any order | Slices can finish in any order, at any speed, with any failure pattern; the final norm is identical |
+| **BLAS thread pinning** | `OMP_NUM_THREADS=1`, etc. baked into the image ENV | Cross-machine bit-identity; multi-CPU-family spot pool won't produce drift |
+
+### Trade-offs — what you give up
+
+Running in the cloud is not free in every dimension. Realistic view:
+
+| Concern | Reality |
+|---|---|
+| **Cost per run** | ~$2 LEMON, ~$4–5 Dortmund with full source analysis. Idle overhead ~$1–2/month for the S3 bucket + CloudWatch log group. Well below the "personal hobby" threshold if you recompute weekly. A budget alert fires at 80% of your monthly limit (default $25) so you can't surprise yourself. |
+| **AWS account required** | You need an AWS account and a few hours of one-time setup (Terraform, GHCR image visibility, IAM, quota). The runbook walks through it. After that, it's one command per recompute. |
+| **Your data has to be in S3** | Public datasets (Dortmund, HBN, MIPDB) are already on AWS Open Data buckets — zero setup. LEMON is on GWDG FTP, so we mirror it once to S3 (one-shot EC2 helper provided). Clinical / PHI data should **not** use this path — keep it local. |
+| **Spot preemptions happen** | ~5–15% of the time on LEMON in us-east-1, higher during peak hours. The retry strategy handles them but each preemption is ~2 min of re-work per subject. If time-to-result matters more than cost, swap the compute env from `SPOT` to `EC2` — ~3× more expensive but zero preemptions. |
+| **Cold-start latency** | First subject doesn't land in S3 for ~3–5 min after submit (spot provisioning + container pull + data sync). Fine for batch runs; not a match for interactive loops. |
+| **No GPU** | The pipeline is deterministic CPU-bound (MNE/scipy/numpy). No compelling reason to GPU-accelerate it today. |
+| **Debugging is indirect** | You look at CloudWatch logs, not a local terminal. The `logs --follow` subcommand streams live, and the framework auto-writes post-mortem logs to S3 on failure — but it's not as fast as local `stdout`. |
+| **Region matters** | OpenNeuro + fcp-indi buckets live in `us-east-1`. Running your compute elsewhere triggers cross-region egress costs (~$0.02/GB). Terraform defaults to `us-east-1`; the submission CLI warns on cross-region. |
+
+### When you should still run locally
+
+- Debugging a single subject or a bug you can reproduce with `--max-subjects 1`.
+- Clinical or PHI data — do not put patient recordings in a shared cloud path.
+- Single-subject case studies in tight iteration loops (edit code, re-run on 1 subject, repeat) — the AWS round-trip is overhead you don't need here.
+- Anything smaller than ~30 minutes of sequential local compute. Keep it simple.
+
+For everything else — full recomputes, parameter sweeps, new datasets, adding ERP overlays — use AWS.
+
+### One-time setup
 
 ```bash
 cp aws-config.example.yaml aws-config.yaml   # edit: bucket, profile, email
@@ -399,14 +440,14 @@ terraform init && terraform apply
 terraform output aws_config_yaml_snippet      # paste into aws-config.yaml
 ```
 
-**Daily use:**
+### Daily use
 
 ```bash
-# Submit a run
+# Submit a run (LEMON, 37ch, full source analysis, 31 slices)
 python scripts/cloud_recompute.py submit \
     --dataset lemon --channels 37 \
     --source --ba-connectivity --dk-connectivity --save-psd \
-    --slices 20 --follow
+    --slices 31 --follow
 
 # Check status / logs / download outputs for any run
 python scripts/cloud_recompute.py list
@@ -415,14 +456,7 @@ python scripts/cloud_recompute.py logs   <run_id> --follow
 python scripts/cloud_recompute.py download <run_id>
 ```
 
-**Key properties:**
-
-- **Resumable**: per-subject checkpoints survive Spot preemption; a preempted slice loses at most one subject (~2 min rework).
-- **Order-independent merge**: normative aggregation is order-invariant, so slices can complete in any order.
-- **Reproducibility**: BLAS thread pinning in the container (`OMP_NUM_THREADS=1` etc.) makes outputs bit-identical across machines. Enforced by `tests/test_determinism.py`.
-- **Multi-dataset support**: LEMON uses an S3 mirror you stage once (it lives on GWDG FTP). HBN, Dortmund, and MIPDB live on AWS Open Data buckets already in us-east-1 — no mirror needed.
-
-See **[`docs/aws-deployment.md`](docs/aws-deployment.md)** for the full runbook (prereqs, troubleshooting, cost expectations, teardown).
+See **[`docs/aws-deployment.md`](docs/aws-deployment.md)** for the full runbook (prereqs, troubleshooting, cost detail, teardown).
 See **[`docs/aws-deployment-assessment.md`](docs/aws-deployment-assessment.md)** for the design rationale.
 See **[`docs/adapting-for-new-experiments.md`](docs/adapting-for-new-experiments.md)** for how to reuse the infrastructure for non-normative (e.g. ERP) analysis pipelines.
 

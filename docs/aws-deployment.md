@@ -4,6 +4,19 @@ How to run a normative recompute on AWS Batch instead of a local machine.
 Background and design rationale live in `aws-deployment-assessment.md`;
 this file is a task-oriented operations guide.
 
+## Why this exists at all
+
+A full recompute with source analysis enabled is ~4–6 hours sequential on
+a modern laptop. That's slow enough to kill iteration — every parameter
+tweak, new dataset, or pipeline change means starting over and waiting out
+a half-day. The cloud path gets the same run done in **~35 minutes for
+about $2** on LEMON, using Spot instances that are ~30% of on-demand price.
+
+The full "why cloud, why spot, and when to stay local" discussion lives
+in the [README's "Running on AWS Batch" section](../README.md#running-on-aws-batch).
+This file assumes you've decided to run in the cloud and just want to know
+how.
+
 ## Prerequisites
 
 - An AWS account with `AdministratorAccess` (or equivalent) for your IAM user.
@@ -86,15 +99,38 @@ Download results:
 aws s3 sync s3://<bucket>/runs/<run_id>/out/ ./norms_output_<run_id>/
 ```
 
-## Costs to expect
+## Costs and timing to expect
 
-| Run | Approximate cost |
-|---|---|
-| LEMON (220 subj, 37ch, source on) | ~$0.60 |
-| Dortmund (608 subj, 37ch, source on) | ~$1.00 |
-| Idle (bucket + log group only) | ~$1–2 / month |
+Observed on real runs (us-east-1, m*i.2xlarge spot, 28 GB container memory, 2 workers/container, full source pipeline with `--source --ba-connectivity --dk-connectivity --save-psd`):
+
+| Run | Array wall time | Merge wall time | Total | Cost |
+|---|---|---|---|---|
+| LEMON (215 subj × 2 conditions, 37ch, full source) | ~35 min | ~42 min | **~78 min** | **~$2.00** |
+| Dortmund (608 subj × 2 conditions, 37ch, full source) | ~40–50 min (projected) | ~90 min (projected — merge scales nonlinearly with subject count) | ~135 min | **~$4–5** (projected) |
+| Scalp-only (no `--source`) | ~3–5× faster | ~10× faster | dominated by array | ~50% less |
+| Idle steady state (S3 bucket + CloudWatch log group) | — | — | — | ~$1–2 / month |
+
+**Why is merge so long?** The merge job walks every normative cell (channel × band × metric × age-bin × condition ≈ 150,000 cells for the full source pipeline) and runs Shapiro-Wilk + CI + prediction intervals + percentiles on the N subjects in each cell. Per-cell cost is ~linear in N but the cell count is fixed, so for LEMON's N=215 it's 42 min of single-threaded scipy.stats. If this becomes the bottleneck for larger datasets we'd want to parallelize the merge, or drop CI/PI computation for non-headline cells.
+
+**Per-run breakdown** (LEMON, 31 slices):
+
+| Component | Share | Notes |
+|---|---|---|
+| 31 × m*i.2xlarge spot × ~35 min | ~$1.75 | The dominant line item |
+| 1 × merge (m*i.2xlarge, ~10 min) | ~$0.05 | Single-instance; runs when array completes |
+| EBS (200 GB gp3 × 31 × ~1 hr) | ~$0.07 | Required: 63 GB LEMON sync + work files |
+| S3 storage (outputs + mirrors) | < $0.01/run, ~$1.50/mo idle | Bucket grows by ~700 MB per retained run |
+| CloudWatch Logs | < $0.01 | 30-day retention |
 
 At weekly cadence: **~$8–10/mo**. The `monthly_budget_usd` alert fires at 80% of your threshold.
+
+### Ways to trade cost for time
+
+- **Default (spot, full source, 31 slices):** ~35 min, ~$2. Sensible default.
+- **Spot off (change compute env to `type = "EC2"`):** ~20–25 min, ~$6. Buys predictability; worth it only when you're waiting on a result for a deadline.
+- **Scalp-only (drop `--source --ba-connectivity --dk-connectivity`):** ~10 min, ~$0.50. Good for quick iteration on preprocessing changes that don't touch source analysis.
+- **More parallelism (bump AWS vCPU quota beyond 256):** can bring LEMON under 20 min total. Current 256 vCPU quota caps us at 32 concurrent slices × 8 vCPU; a bump to 512 vCPU would let us halve the per-slice subject count. Bottleneck moves from "wait for containers" to "wait for spot provisioning" (~3–5 min unavoidable).
+- **Skip selective sync (set `DATA_MIRROR` empty, use loader downloads):** usually slower, not recommended for LEMON. Listed here only so you know the sync is optional.
 
 ## Adding a new dataset
 
