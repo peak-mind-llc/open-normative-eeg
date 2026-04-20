@@ -20,6 +20,7 @@ dependencies = [
     "python-picard>=0.7",
     "asrpy>=0.0.2",
     "networkx>=3.0",
+    "nibabel>=5.0",
     "onnxruntime>=1.16",
 ]
 

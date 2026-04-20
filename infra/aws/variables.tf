@@ -37,9 +37,9 @@ variable "image" {
 }
 
 variable "instance_types" {
-  description = "Spot instance types (ranked by preference) for the array-job compute environment."
+  description = "Spot instance types (ranked by preference) for the array-job compute environment. m-family = 8 vCPU / 32 GB (4:1 ratio) — LEMON+source peaks >4 GB/worker, c-family's 2:1 ratio OOMs."
   type        = list(string)
-  default     = ["c7i.2xlarge", "c6i.2xlarge", "c5.2xlarge"]
+  default     = ["m7i.2xlarge", "m6i.2xlarge", "m5.2xlarge"]
 }
 
 variable "max_vcpus" {
@@ -49,15 +49,15 @@ variable "max_vcpus" {
 }
 
 variable "array_vcpus" {
-  description = "vCPUs requested per array-job container. 8 matches c*i.2xlarge."
+  description = "vCPUs requested per array-job container. 32 matches c*i.8xlarge."
   type        = number
   default     = 8
 }
 
 variable "array_memory_mib" {
-  description = "Memory (MiB) per array-job container. Leaves ~2 GB for the host on a 16 GB instance."
+  description = "Memory (MiB) per array-job container. 28672 = 28 GiB on an m*i.2xlarge (32 GB), leaves ~4 GB for OS/Docker."
   type        = number
-  default     = 14336
+  default     = 28672
 }
 
 variable "merge_vcpus" {
@@ -67,9 +67,9 @@ variable "merge_vcpus" {
 }
 
 variable "merge_memory_mib" {
-  description = "Memory (MiB) for the merge job. Full-run aggregation loads all subjects in RAM."
+  description = "Memory (MiB) for the merge job. Full-run aggregation loads all subjects in RAM — 430 LEMON subjects × ~2 MB each + normative dict build."
   type        = number
-  default     = 14336
+  default     = 28672
 }
 
 variable "log_retention_days" {

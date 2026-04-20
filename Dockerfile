@@ -47,6 +47,14 @@ COPY open_normative /app/open_normative
 COPY scripts /app/scripts
 RUN pip install --no-deps -e /app
 
+# Pre-compute Desikan-Killiany + Brodmann surface labels. These aren't
+# checked in (gitignored binaries). build_dk_labels.py fetches fsaverage
+# (~400 MB) which we remove afterward to keep the image small. Missing these
+# pkls silently drops dk_connectivity / ba_connectivity at runtime.
+RUN python /app/scripts/build_dk_labels.py \
+ && python /app/scripts/build_ba_labels.py \
+ && rm -rf /root/mne_data /root/.cache
+
 # BLAS thread pinning is required for cross-machine bit-identity
 # (see open_normative/parameters.py). build_norms.py drives parallelism
 # via --jobs, not BLAS.
