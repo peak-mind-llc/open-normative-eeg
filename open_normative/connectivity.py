@@ -513,7 +513,7 @@ def analyze_connectivity(
     Steps:
         1. Epoch the continuous recording.
         2. Average channels within each hub.
-        3. Compute hub-level connectivity (dwPLI, coh, imcoh) per band.
+        3. Compute hub-level connectivity (dwPLI, coh) per band.
         4. Compute electrode-level connectivity.
         5. Compute graph metrics from hub-level dwPLI.
         6. Compute theta-gamma PAC.

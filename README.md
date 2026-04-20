@@ -22,7 +22,7 @@ Every recording passes through:
 8. **Spectral analysis** — PSD (Welch), 11 frequency bands, aperiodic/1/f fitting (specparam), specparam-corrected band power, asymmetry
 9. **GSF correction** — Global Scale Factor removes non-neural variance (skull thickness, amplifier gain)
 10. **IAF detection** — Individual Alpha Frequency via peak detection and center-of-gravity (Corcoran et al. 2018)
-11. **Connectivity** — dwPLI, coherence, imaginary coherence across 10 hub regions, graph metrics, theta-gamma PAC
+11. **Connectivity** — dwPLI, coherence across 10 hub regions, full electrode-pair connectivity, graph metrics, theta-gamma PAC
 
 ## Specparam-Corrected Z-Scores
 
