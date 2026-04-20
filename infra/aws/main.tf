@@ -208,6 +208,36 @@ resource "aws_cloudwatch_log_group" "jobs" {
 # Batch compute environment — Spot, capacity-optimized
 # ---------------------------------------------------------------------------
 
+# Launch template for Batch container instances — default ECS-optimized
+# AMI ships with a ~30 GB root volume, which is too small for our workflow
+# (LEMON mirror alone is 63 GB, and containers sync from it). Override
+# with 200 GB of gp3 so containers have plenty of local scratch space.
+resource "aws_launch_template" "batch_instance" {
+  name        = "${var.name_prefix}-batch-instance"
+  description = "Larger root EBS for Batch containers (handles 63+ GB dataset syncs)"
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 200   # GB — plenty for LEMON (63 GB) + Dortmund (24 GB)
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
+    }
+  }
+
+  metadata_options {
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+    http_endpoint               = "enabled"
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags          = { Purpose = "batch-worker" }
+  }
+}
+
 resource "aws_batch_compute_environment" "spot" {
   compute_environment_name = "${var.name_prefix}-spot"
   type                     = "MANAGED"
@@ -226,6 +256,11 @@ resource "aws_batch_compute_environment" "spot" {
     subnets             = data.aws_subnets.default.ids
     security_group_ids  = [aws_security_group.batch.id]
     instance_role       = aws_iam_instance_profile.ec2_instance.arn
+
+    launch_template {
+      launch_template_id = aws_launch_template.batch_instance.id
+      version            = "$Latest"
+    }
 
     # bid_percentage null = pay up to the on-demand price when needed.
     # Set e.g. 60 to cap Spot bids at 60% of on-demand.
