@@ -172,7 +172,7 @@ PIPELINE_PARAMS = {
         "epoch_overlap": 0.0,
         "min_epochs": 30,
         "max_epochs": 120,
-        "methods": ["dwpli", "coh", "imcoh"],
+        "methods": ["dwpli", "coh"],
         "bands": {
             "Delta": [1, 4],
             "Theta": [4, 8],

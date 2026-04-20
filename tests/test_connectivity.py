@@ -68,7 +68,6 @@ def test_compute_connectivity(synthetic_raw_19ch):
     results, vc_flags = compute_connectivity(hub_epochs, hub_names, params)
     assert "dwpli" in results
     assert "coh" in results
-    assert "imcoh" in results
     for method in params["methods"]:
         assert len(results[method]) > 0
         for band, matrix in results[method].items():

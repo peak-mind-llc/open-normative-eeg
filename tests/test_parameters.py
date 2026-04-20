@@ -107,7 +107,7 @@ def test_connectivity_params():
     assert conn["epoch_overlap"] == 0.0
     assert conn["min_epochs"] == 30
     assert conn["max_epochs"] == 120
-    assert conn["methods"] == ["dwpli", "coh", "imcoh"]
+    assert conn["methods"] == ["dwpli", "coh"]
 
 
 def test_connectivity_hubs():
