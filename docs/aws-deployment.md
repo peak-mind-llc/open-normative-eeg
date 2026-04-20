@@ -103,12 +103,14 @@ aws s3 sync s3://<bucket>/runs/<run_id>/out/ ./norms_output_<run_id>/
 
 Observed on real runs (us-east-1, m*i.2xlarge spot, 28 GB container memory, 2 workers/container, full source pipeline with `--source --ba-connectivity --dk-connectivity --save-psd`):
 
-| Run | Wall time | Cost |
-|---|---|---|
-| LEMON (215 subj × 2 conditions, 37ch, full source) | ~35 min | **~$2.00** |
-| Dortmund (608 subj × 2 conditions, 37ch, full source) | ~60–75 min (projected) | **~$4–5** (projected) |
-| Scalp-only (no `--source`) | ~3–5× faster | ~50% less |
-| Idle steady state (S3 bucket + CloudWatch log group) | — | ~$1–2 / month |
+| Run | Array wall time | Merge wall time | Total | Cost |
+|---|---|---|---|---|
+| LEMON (215 subj × 2 conditions, 37ch, full source) | ~35 min | ~42 min | **~78 min** | **~$2.00** |
+| Dortmund (608 subj × 2 conditions, 37ch, full source) | ~40–50 min (projected) | ~90 min (projected — merge scales nonlinearly with subject count) | ~135 min | **~$4–5** (projected) |
+| Scalp-only (no `--source`) | ~3–5× faster | ~10× faster | dominated by array | ~50% less |
+| Idle steady state (S3 bucket + CloudWatch log group) | — | — | — | ~$1–2 / month |
+
+**Why is merge so long?** The merge job walks every normative cell (channel × band × metric × age-bin × condition ≈ 150,000 cells for the full source pipeline) and runs Shapiro-Wilk + CI + prediction intervals + percentiles on the N subjects in each cell. Per-cell cost is ~linear in N but the cell count is fixed, so for LEMON's N=215 it's 42 min of single-threaded scipy.stats. If this becomes the bottleneck for larger datasets we'd want to parallelize the merge, or drop CI/PI computation for non-headline cells.
 
 **Per-run breakdown** (LEMON, 31 slices):
 
