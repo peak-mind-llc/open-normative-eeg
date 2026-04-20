@@ -66,6 +66,7 @@ case "${MODE}" in
     aws s3 sync "${RUN_PREFIX}/subjects/"        "${CHECKPOINT_LOCAL}/subjects/"        --no-progress || true
     aws s3 sync "${RUN_PREFIX}/psd_checkpoints/" "${CHECKPOINT_LOCAL}/psd_checkpoints/" --no-progress || true
 
+    SELECTIVE_SYNC=0
     if [[ -n "${DATA_MIRROR:-}" ]]; then
         mkdir -p "${CHECKPOINT_LOCAL}/data"
         # Try the per-slice manifest first: each container then pulls only its
@@ -73,6 +74,7 @@ case "${MODE}" in
         # Fall back to full sync if the manifest is missing for any reason.
         MANIFEST="/tmp/slice_subjects.txt"
         if aws s3 cp "${RUN_PREFIX}/slices/${SLICE}.txt" "${MANIFEST}" --no-progress 2>/dev/null; then
+            SELECTIVE_SYNC=1
             N_SUBJ=$(wc -l < "${MANIFEST}")
             echo "--- selective sync: ${N_SUBJ} subjects from ${DATA_MIRROR} ---"
             # Pass 1: metadata at the mirror root (CSVs, TSVs, JSONs). Small.
@@ -96,13 +98,21 @@ case "${MODE}" in
         mkdir -p "${DATA_DIR}"
     fi
 
+    # With selective sync, the data dir already contains exactly this slice's
+    # subjects — so pass no --subject-range (process all). With full sync the
+    # data dir has the whole mirror, so --subject-range is what picks our share.
+    RANGE_ARG=""
+    if (( SELECTIVE_SYNC == 0 )); then
+        RANGE_ARG="--subject-range ${START}:${END}"
+    fi
+
     echo "--- running build_norms ---"
     # shellcheck disable=SC2086
     python /app/scripts/build_norms.py "${DATA_DIR}" \
         --dataset "${DATASET}" \
         --channels "${CHANNELS}" \
         --condition "${CONDITION}" \
-        --subject-range "${START}:${END}" \
+        ${RANGE_ARG} \
         --output "${CHECKPOINT_LOCAL}" \
         --checkpoint-sync "${RUN_PREFIX}/" \
         --jobs "${WORKERS}" \
