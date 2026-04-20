@@ -111,16 +111,56 @@ def _make_run_id(dataset: str, channels: int) -> str:
     return f"{dataset}-{channels}ch-{stamp}"
 
 
-def _count_eligible_subjects(dataset: str, data_dir: Path, channels: int, condition: str) -> int:
+def _enumerate_eligible_subjects(
+    dataset: str, data_dir: Path, channels: int, condition: str,
+) -> list[tuple[str, str]]:
+    """Return ordered list of (subject_id, condition) records.
+
+    Matches build_norms.py iteration order so slice N here corresponds to
+    slice N there. Both conditions of a subject count as separate entries
+    (same as build_norms.py's eligible_idx stride).
+    """
     from open_normative.datasets import DATASETS
     loader = DATASETS[dataset]()
     loader.n_channels = channels
     conditions = {"eo", "ec"} if condition == "both" else {condition}
-    count = 0
+    out: list[tuple[str, str]] = []
     for record in loader.iter_subject_files(data_dir):
         if record.condition in conditions:
-            count += 1
-    return count
+            out.append((record.subject_id, record.condition))
+    return out
+
+
+def _write_slice_manifests(
+    cfg: Config, run_id: str,
+    eligible: list[tuple[str, str]], slices: int, per_slice: int,
+) -> None:
+    """Upload one plaintext manifest per slice to S3.
+
+    Key: runs/<run_id>/slices/<i>.txt, one subject_id per line (deduped,
+    order preserved). The container's entrypoint reads this to drive a
+    selective aws s3 sync — each slice pulls ~per_slice/total of the mirror
+    instead of the full dataset, which is the difference between a 9-min
+    and a 30-second data-sync phase on LEMON.
+    """
+    import boto3
+    s3 = _session(cfg).client("s3")
+    for i in range(slices):
+        start = i * per_slice
+        end = min((i + 1) * per_slice, len(eligible))
+        ids = [sid for sid, _ in eligible[start:end]]
+        # Dedupe while preserving first-seen order (eo+ec map to same dir).
+        seen: set[str] = set()
+        unique: list[str] = []
+        for sid in ids:
+            if sid not in seen:
+                seen.add(sid)
+                unique.append(sid)
+        body = ("\n".join(unique) + "\n").encode("utf-8")
+        key = f"{cfg.runs_prefix}{run_id}/slices/{i}.txt"
+        s3.put_object(
+            Bucket=cfg.bucket, Key=key, Body=body, ContentType="text/plain",
+        )
 
 
 def _compute_slicing(
@@ -261,7 +301,10 @@ def cmd_submit(args) -> int:
             f"Slice sizing reads the local dataset to enumerate subjects.\n"
             f"Pass --data-dir if your local copy lives elsewhere."
         )
-    total = _count_eligible_subjects(args.dataset, data_dir, args.channels, args.condition)
+    eligible = _enumerate_eligible_subjects(
+        args.dataset, data_dir, args.channels, args.condition,
+    )
+    total = len(eligible)
     slices, per_slice = _compute_slicing(total, args.slices, args.per_slice, cfg)
 
     run_id = _make_run_id(args.dataset, args.channels)
@@ -298,6 +341,11 @@ def cmd_submit(args) -> int:
     queues = batch.describe_job_queues(jobQueues=[cfg.job_queue]).get("jobQueues", [])
     if not queues or queues[0].get("state") != "ENABLED":
         sys.exit(f"Job queue {cfg.job_queue!r} not found or not ENABLED. Apply Terraform first.")
+
+    # Write per-slice subject manifests so each container selectively syncs
+    # only its own ~per_slice/total of the mirror instead of the whole thing.
+    _write_slice_manifests(cfg, run_id, eligible, slices, per_slice)
+    print(f"wrote {slices} slice manifest(s) to s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}/slices/")
 
     array_resp = batch.submit_job(
         jobName=f"{run_id}-array",

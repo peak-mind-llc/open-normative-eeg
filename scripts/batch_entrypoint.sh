@@ -67,9 +67,29 @@ case "${MODE}" in
     aws s3 sync "${RUN_PREFIX}/psd_checkpoints/" "${CHECKPOINT_LOCAL}/psd_checkpoints/" --no-progress || true
 
     if [[ -n "${DATA_MIRROR:-}" ]]; then
-        echo "--- syncing raw data mirror from ${DATA_MIRROR} ---"
         mkdir -p "${CHECKPOINT_LOCAL}/data"
-        aws s3 sync "${DATA_MIRROR}" "${CHECKPOINT_LOCAL}/data/" --no-progress
+        # Try the per-slice manifest first: each container then pulls only its
+        # own subjects (~per_slice/total of the mirror) instead of all 63 GB.
+        # Fall back to full sync if the manifest is missing for any reason.
+        MANIFEST="/tmp/slice_subjects.txt"
+        if aws s3 cp "${RUN_PREFIX}/slices/${SLICE}.txt" "${MANIFEST}" --no-progress 2>/dev/null; then
+            N_SUBJ=$(wc -l < "${MANIFEST}")
+            echo "--- selective sync: ${N_SUBJ} subjects from ${DATA_MIRROR} ---"
+            # Pass 1: metadata at the mirror root (CSVs, TSVs, JSONs). Small.
+            aws s3 sync "${DATA_MIRROR}" "${CHECKPOINT_LOCAL}/data/" \
+                --exclude "sub-*/*" --exclude "derivatives/*" --no-progress || true
+            # Pass 2: only the subjects this slice needs. Build an --include list.
+            INCLUDES=()
+            while IFS= read -r sid; do
+                [[ -z "$sid" ]] && continue
+                INCLUDES+=("--include" "${sid}/*")
+            done < "${MANIFEST}"
+            aws s3 sync "${DATA_MIRROR}" "${CHECKPOINT_LOCAL}/data/" \
+                --exclude "*" "${INCLUDES[@]}" --no-progress
+        else
+            echo "--- no slice manifest; full sync from ${DATA_MIRROR} ---"
+            aws s3 sync "${DATA_MIRROR}" "${CHECKPOINT_LOCAL}/data/" --no-progress
+        fi
         DATA_DIR="${CHECKPOINT_LOCAL}/data"
     else
         DATA_DIR="${CHECKPOINT_LOCAL}/data"
