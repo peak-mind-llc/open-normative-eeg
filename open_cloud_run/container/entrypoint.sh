@@ -87,16 +87,17 @@ case "${MODE}" in
     SUCCEEDED=0
     SKIPPED=0
 
+    # Save the root OUT_DIR before the loop overwrites it per-unit.
+    ROOT_OUT_DIR="${OUT_DIR}"
+
     while IFS= read -r UNIT || [ -n "${UNIT}" ]; do
         [ -z "${UNIT}" ] && continue
-        UNIT_OUT_DIR="${OUT_DIR}/${UNIT}"
+        UNIT_OUT_DIR="${ROOT_OUT_DIR}/${UNIT}"
         mkdir -p "${UNIT_OUT_DIR}"
 
         echo ""
         echo "----- slice=${SLICE_INDEX} unit=${UNIT} -----"
         export UNIT OUT_DIR="${UNIT_OUT_DIR}" RUN_ID BUCKET SLICE_INDEX
-        # Restore parent-level OUT_DIR on the way out via subshell;
-        # driver only sees its per-unit OUT_DIR.
         if eval "${DRIVER_CMD}"; then
             SUCCEEDED=$((SUCCEEDED + 1))
         else
@@ -112,10 +113,8 @@ case "${MODE}" in
         fi
     done < "${SLICE_MANIFEST}"
 
-    # Restore OUT_DIR for the slice-end sync
-    # (it was per-unit inside the loop above).
-    export OUT_DIR
-    OUT_DIR="${OUT_DIR%/*}"  # no-op if OUT_DIR didn't change; safety
+    # Restore OUT_DIR for the slice-end sync.
+    export OUT_DIR="${ROOT_OUT_DIR}"
 
     echo ""
     echo "--- slice complete: ${SUCCEEDED} ok, ${SKIPPED} skipped, ${FAILED} failed ---"
