@@ -121,10 +121,16 @@ case "${MODE}" in
     ;;
 
   merge)
-    mkdir -p "${CHECKPOINT_LOCAL}/subjects" "${CHECKPOINT_LOCAL}/out"
+    mkdir -p "${CHECKPOINT_LOCAL}/subjects" "${CHECKPOINT_LOCAL}/psd_checkpoints" "${CHECKPOINT_LOCAL}/out"
 
     echo "--- syncing per-subject checkpoints ---"
     aws s3 sync "${RUN_PREFIX}/subjects/" "${CHECKPOINT_LOCAL}/subjects/" --no-progress
+
+    # PSD checkpoints are optional (--save-psd must have been on during the
+    # array runs). build_norms.py --merge picks them up automatically from
+    # merge_dir.parent / psd_checkpoints and builds norms_psd.npz if present.
+    echo "--- syncing per-subject PSD checkpoints (optional) ---"
+    aws s3 sync "${RUN_PREFIX}/psd_checkpoints/" "${CHECKPOINT_LOCAL}/psd_checkpoints/" --no-progress || true
 
     echo "--- running build_norms.py --merge ---"
     python /app/scripts/build_norms.py --merge \
