@@ -9,6 +9,11 @@ build/
 # Normative DB build outputs (regenerate via scripts/build_norms.py)
 norms_output/
 norms_output_*/
+norm_out/
+smoke_test_output/
+
+# Local pipeline results from scripts/pipeline/recompute_all.sh + validate_all.sh
+results/
 
 # Generated BA/DK surface label pickles (regenerate via build_{ba,dk}_labels.py)
 open_normative/data/source/ba_labels_*.pkl
@@ -17,6 +22,7 @@ open_normative/data/source/dk_labels_*.pkl
 # Local tooling / scratch (not part of the source tree)
 .claude/
 cmd
+cmd.sh
 re-analyze.sh
 npz_integration_prompt.md
 
