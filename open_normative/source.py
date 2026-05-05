@@ -1182,7 +1182,66 @@ def analyze_source(
     return result
 
 
-def source_result_to_metrics(source_result: dict) -> dict:
+_SOURCE_RATIO_POWER_KEYS = (
+    "source_power",
+    "corrected_source_power",
+    "corrected_dics_power",
+)
+
+
+def add_source_ratios(metrics: dict, ratio_defs: list[dict]) -> None:
+    """Inject ratio bands into source metrics in place.
+
+    For each source channel and each available power_key
+    (source_power / corrected_source_power / corrected_dics_power),
+    compute every ratio in ratio_defs from the underlying band values
+    and store as ``metrics[ch][<ratio_band>]["value"]``, where:
+
+    - source_power → ratio band ``<name>``
+    - corrected_source_power / corrected_dics_power → ratio band
+      ``corrected_<name>``
+
+    This mirrors the scalp convention where corrected ratios are stored
+    as a separate band keyed ``corrected_<ratio_name>``.
+    """
+    if not ratio_defs:
+        return
+    for ch, bands in list(metrics.items()):
+        if not isinstance(bands, dict):
+            continue
+        for power_key in _SOURCE_RATIO_POWER_KEYS:
+            band_to_val: dict = {}
+            for band_name, vals in bands.items():
+                if not isinstance(vals, dict):
+                    continue
+                if power_key in vals:
+                    band_to_val[band_name] = vals[power_key]
+            if not band_to_val:
+                continue
+            prefix = "" if power_key == "source_power" else "corrected_"
+            for spec in ratio_defs:
+                num_vals = [band_to_val.get(b) for b in spec["num"]]
+                den_vals = [band_to_val.get(b) for b in spec["den"]]
+                if any(v is None for v in num_vals + den_vals):
+                    continue
+                try:
+                    num = float(sum(num_vals))
+                    den = float(sum(den_vals))
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(num) or not np.isfinite(den) or den <= 0:
+                    val = float("nan")
+                else:
+                    val = num / den
+                ratio_band = f"{prefix}{spec['name']}"
+                if ratio_band not in metrics[ch]:
+                    metrics[ch][ratio_band] = {}
+                metrics[ch][ratio_band]["value"] = val
+
+
+def source_result_to_metrics(
+    source_result: dict, ratio_defs: Optional[list[dict]] = None
+) -> dict:
     """Convert source analysis results to flat metric dicts for normative aggregation.
 
     Returns a dict keyed by synthetic "channel" names:
@@ -1380,5 +1439,10 @@ def source_result_to_metrics(source_result: dict) -> dict:
                     if band_name not in metrics[key]:
                         metrics[key][band_name] = {}
                     metrics[key][band_name][f"between_{method}"] = val
+
+    if ratio_defs is None:
+        from open_normative.parameters import PIPELINE_PARAMS
+        ratio_defs = PIPELINE_PARAMS.get("spectral", {}).get("ratios", [])
+    add_source_ratios(metrics, ratio_defs)
 
     return metrics

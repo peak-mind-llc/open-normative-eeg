@@ -97,8 +97,15 @@ def test_spectral_asymmetry_params():
 
 def test_spectral_ratios():
     ratios = PIPELINE_PARAMS["spectral"]["ratios"]
-    assert ["Theta", "Beta"] in ratios
-    assert ["Theta", "Beta1"] in ratios
+    names = {r["name"] for r in ratios}
+    # Existing four
+    assert {"Theta/Beta", "Theta/Beta1", "Delta/HighBeta", "Alpha/HighBeta"} <= names
+    # New clinically validated four
+    assert {"Alpha/Theta", "Delta/Alpha", "Alpha/Beta",
+            "(Delta+Theta)/(Alpha+Beta)"} <= names
+    for r in ratios:
+        assert isinstance(r["num"], list) and r["num"]
+        assert isinstance(r["den"], list) and r["den"]
 
 
 def test_connectivity_params():
