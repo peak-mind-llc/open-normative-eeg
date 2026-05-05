@@ -114,11 +114,19 @@ PIPELINE_PARAMS = {
             "HighBeta": [25, 30],
             "Gamma": [30, 50],
         },
+        # Each ratio is {"name", "num": [bands], "den": [bands]}.
+        # Numerator and denominator are summed before division, so
+        # composites like (Delta+Theta)/(Alpha+Beta) work uniformly.
         "ratios": [
-            ["Theta", "Beta"],
-            ["Theta", "Beta1"],
-            ["Delta", "HighBeta"],
-            ["Alpha", "HighBeta"],
+            {"name": "Theta/Beta",        "num": ["Theta"], "den": ["Beta"]},
+            {"name": "Theta/Beta1",       "num": ["Theta"], "den": ["Beta1"]},
+            {"name": "Delta/HighBeta",    "num": ["Delta"], "den": ["HighBeta"]},
+            {"name": "Alpha/HighBeta",    "num": ["Alpha"], "den": ["HighBeta"]},
+            {"name": "Alpha/Theta",       "num": ["Alpha"], "den": ["Theta"]},
+            {"name": "Delta/Alpha",       "num": ["Delta"], "den": ["Alpha"]},
+            {"name": "Alpha/Beta",        "num": ["Alpha"], "den": ["Beta"]},
+            {"name": "(Delta+Theta)/(Alpha+Beta)",
+             "num": ["Delta", "Theta"], "den": ["Alpha", "Beta"]},
         ],
         "aperiodic": {
             "freq_range": [2, 40],

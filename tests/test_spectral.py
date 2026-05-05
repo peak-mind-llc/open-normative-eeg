@@ -59,10 +59,49 @@ def test_compute_band_ratios(mock_band_power):
         "T5", "P3", "Pz", "P4", "T6",
         "O1", "O2",
     ]
-    ratios = compute_band_ratios(mock_band_power, ch_names)
-    assert "Theta/Beta" in ratios
+    ratio_defs = PIPELINE_PARAMS["spectral"]["ratios"]
+    ratios = compute_band_ratios(mock_band_power, ch_names, ratio_defs)
+    expected_names = {
+        "Theta/Beta", "Theta/Beta1", "Delta/HighBeta", "Alpha/HighBeta",
+        "Alpha/Theta", "Delta/Alpha", "Alpha/Beta",
+        "(Delta+Theta)/(Alpha+Beta)",
+    }
+    assert expected_names.issubset(ratios.keys())
     assert "Fp1" in ratios["Theta/Beta"]
     assert ratios["Theta/Beta"]["Fp1"] > 0
+
+
+def test_compute_band_ratios_composite():
+    """DTABR = (Delta+Theta)/(Alpha+Beta) — composite numerator and denominator."""
+    bp = {
+        "Delta": {"absolute": np.array([1.0, 2.0])},
+        "Theta": {"absolute": np.array([3.0, 4.0])},
+        "Alpha": {"absolute": np.array([5.0, 6.0])},
+        "Beta":  {"absolute": np.array([7.0, 8.0])},
+    }
+    ratio_defs = [
+        {"name": "DTABR", "num": ["Delta", "Theta"], "den": ["Alpha", "Beta"]},
+    ]
+    ratios = compute_band_ratios(bp, ["A", "B"], ratio_defs)
+    # ch A: (1+3)/(5+7) = 4/12 = 0.3333
+    # ch B: (2+4)/(6+8) = 6/14 = 0.4286
+    assert ratios["DTABR"]["A"] == pytest.approx(4 / 12)
+    assert ratios["DTABR"]["B"] == pytest.approx(6 / 14)
+
+
+def test_compute_band_ratios_zero_denominator():
+    """Sum-of-bands denominator of 0 should yield NaN, not divide-by-zero."""
+    bp = {
+        "Delta": {"absolute": np.array([1.0])},
+        "Theta": {"absolute": np.array([2.0])},
+        "Alpha": {"absolute": np.array([0.0])},
+        "Beta":  {"absolute": np.array([0.0])},
+    }
+    ratio_defs = [
+        {"name": "DTABR", "num": ["Delta", "Theta"], "den": ["Alpha", "Beta"]},
+    ]
+    ratios = compute_band_ratios(bp, ["A"], ratio_defs)
+    assert np.isnan(ratios["DTABR"]["A"])
 
 
 def test_compute_aperiodic(synthetic_raw_19ch):

@@ -3,7 +3,7 @@
 import json
 import numpy as np
 import pytest
-from open_normative.normative import build_normative, NormCell
+from open_normative.normative import build_normative, NormCell, _is_log_transform
 from open_normative.io import write_norms_json, write_norms_csv, read_norms_json
 
 
@@ -46,6 +46,52 @@ def test_build_normative_no_log_transform_relative_power(mock_subject_metrics):
     if rel_power_cells:
         cell = rel_power_cells[0]
         assert cell.log_transformed is False
+
+
+def test_is_log_transform_helper():
+    """Ratio bands (containing '/') get log-transformed regardless of metric."""
+    # Power metrics by name
+    assert _is_log_transform("absolute_power", "Alpha") is True
+    assert _is_log_transform("corrected_absolute_power", "Alpha") is True
+    assert _is_log_transform("relative_power", "Alpha") is False
+    # Ratios — band contains "/"
+    assert _is_log_transform("value", "Theta/Beta") is True
+    assert _is_log_transform("value", "corrected_Theta/Beta") is True
+    assert _is_log_transform("value", "(Delta+Theta)/(Alpha+Beta)") is True
+    # Asymmetry pairs (e.g. F3/F4) are stored as channel, not band, so this
+    # check is a band-name check; asymmetry's band is e.g. "Alpha".
+    assert _is_log_transform("asymmetry_index", "Alpha") is False
+
+
+def test_build_normative_log_transforms_ratios():
+    """Ratio cells (band containing '/') should be log-transformed."""
+    rng = np.random.RandomState(42)
+    subjects = [
+        {
+            "subject_id": f"sub-{i:03d}",
+            "age": rng.randint(20, 70),
+            "sex": "F",
+            "condition": "eo",
+            "metrics": {
+                "Fz": {
+                    "Theta/Beta": {
+                        "value": float(rng.lognormal(0.0, 0.4)),
+                    },
+                    "(Delta+Theta)/(Alpha+Beta)": {
+                        "value": float(rng.lognormal(0.0, 0.5)),
+                    },
+                },
+            },
+        }
+        for i in range(40)
+    ]
+    norms = build_normative(subjects)
+    ratio_cells = [c for c in norms if "/" in c.band]
+    assert len(ratio_cells) > 0
+    for cell in ratio_cells:
+        assert cell.log_transformed is True
+        assert cell.log_mean is not None
+        assert cell.log_sd is not None
 
 
 def test_build_normative_log_transform_corrected_absolute_power(mock_subject_metrics):

@@ -63,32 +63,38 @@ def compute_band_power(
 
 
 def compute_band_ratios(
-    band_power: dict, ch_names: list[str], power_key: str = "absolute"
+    band_power: dict,
+    ch_names: list[str],
+    ratio_defs: list[dict],
+    power_key: str = "absolute",
 ) -> dict:
-    """Compute key band ratios at each channel.
+    """Compute frequency band ratios at each channel.
 
     Args:
         band_power: Dict of {band_name: {power_key: array, ...}}.
         ch_names: Channel names.
-        power_key: Key for absolute power arrays (e.g. "absolute" or
+        ratio_defs: List of {"name": str, "num": [bands], "den": [bands]}.
+            Numerator and denominator bands are summed before division so
+            single (Theta/Beta) and composite ((Delta+Theta)/(Alpha+Beta))
+            ratios are handled uniformly.
+        power_key: Key for power arrays (e.g. "absolute" or
             "corrected_absolute").
     """
-    ratio_defs = {
-        "Theta/Beta": ("Theta", "Beta"),
-        "Theta/Beta1": ("Theta", "Beta1"),
-        "Delta/HighBeta": ("Delta", "HighBeta"),
-        "Alpha/HighBeta": ("Alpha", "HighBeta"),
-    }
     ratios = {}
-    for ratio_name, (num_band, den_band) in ratio_defs.items():
-        if num_band in band_power and den_band in band_power:
-            num = band_power[num_band].get(power_key)
-            den = band_power[den_band].get(power_key)
-            if num is None or den is None:
-                continue
-            with np.errstate(divide="ignore", invalid="ignore"):
-                ratio = np.where(den > 0, num / den, np.nan)
-            ratios[ratio_name] = dict(zip(ch_names, ratio.tolist()))
+    for spec in ratio_defs:
+        name = spec["name"]
+        try:
+            num = sum(band_power[b][power_key] for b in spec["num"])
+            den = sum(band_power[b][power_key] for b in spec["den"])
+        except (KeyError, TypeError):
+            continue
+        if num is None or den is None:
+            continue
+        num = np.asarray(num, dtype=float)
+        den = np.asarray(den, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(den > 0, num / den, np.nan)
+        ratios[name] = dict(zip(ch_names, ratio.tolist()))
     return ratios
 
 
@@ -457,13 +463,17 @@ def analyze_spectral(raw, params: dict) -> dict:
     """
     psds, freqs = compute_psd(raw, params)
     band_power = compute_band_power(psds, freqs, params["bands"])
-    ratios = compute_band_ratios(band_power, raw.ch_names)
+    ratio_defs = params.get("ratios", [])
+    ratios = compute_band_ratios(band_power, raw.ch_names, ratio_defs)
     aperiodic = compute_aperiodic(psds, freqs, raw.ch_names, params["aperiodic"])
     corrected_band_power = compute_corrected_band_power(
         psds, freqs, aperiodic, raw.ch_names, params["bands"]
     )
     corrected_ratios = compute_band_ratios(
-        corrected_band_power, raw.ch_names, power_key="corrected_absolute"
+        corrected_band_power,
+        raw.ch_names,
+        ratio_defs,
+        power_key="corrected_absolute",
     )
     asymmetry = compute_asymmetry(
         band_power, raw.ch_names, params["asymmetry"]["homologous_pairs"]

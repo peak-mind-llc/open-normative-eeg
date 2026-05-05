@@ -20,11 +20,20 @@ _LOG_TRANSFORM_METRICS = {
     "absolute_power",
     "corrected_absolute_power",
     "gsf_absolute_power",
-    "Theta/Beta",
-    "Theta/Beta1",
-    "Delta/HighBeta",
-    "Alpha/HighBeta",
 }
+
+
+def _is_log_transform(metric: str, band: str) -> bool:
+    """Decide whether a (band, metric) cell should be log-transformed.
+
+    Power metrics are flagged by name. Ratio cells are stored with the
+    ratio expression as the band (e.g. "Theta/Beta", "corrected_Alpha/Theta",
+    "(Delta+Theta)/(Alpha+Beta)") and metric "value" — detect them by the
+    presence of "/" in the band name.
+    """
+    if metric in _LOG_TRANSFORM_METRICS:
+        return True
+    return "/" in band
 
 _PERCENTILE_POINTS = [1, 5, 10, 25, 50, 75, 90, 95, 99]
 
@@ -108,7 +117,7 @@ def _compute_cell(
     sd = float(np.std(arr, ddof=1)) if n > 1 else 0.0
 
     # Log-transform if applicable.
-    log_transformed = metric in _LOG_TRANSFORM_METRICS
+    log_transformed = _is_log_transform(metric, band)
     log_mean = None
     log_sd = None
     if log_transformed:

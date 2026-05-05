@@ -17,7 +17,7 @@ from typing import Optional
 import numpy as np
 from scipy.stats import norm as _norm_dist
 
-from open_normative.normative import NormCell, _LOG_TRANSFORM_METRICS
+from open_normative.normative import NormCell, _is_log_transform
 
 
 @dataclass
@@ -185,7 +185,7 @@ def compare_to_norms(
     and for each matching (channel, band, metric) cell computes a z-score
     and interpolated percentile rank.
 
-    Log-transformation is applied to metrics in _LOG_TRANSFORM_METRICS
+    Log-transformation is applied to metrics flagged by _is_log_transform()
     before computing z-scores (using log_mean / log_sd from the cell).
 
     Args:
@@ -226,7 +226,7 @@ def compare_to_norms(
                 # Compute z-score.
                 z_score: Optional[float] = None
                 use_log = (
-                    metric_name in _LOG_TRANSFORM_METRICS
+                    _is_log_transform(metric_name, band)
                     and cell.log_transformed
                     and cell.log_mean is not None
                     and cell.log_sd is not None
