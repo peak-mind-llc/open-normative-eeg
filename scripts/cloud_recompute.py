@@ -35,6 +35,18 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# OpenNeuro datasets that can be streamed directly from s3://openneuro.org
+# (us-east-1 public bucket). The job role policy in infra/aws/main.tf grants
+# read access. HBN is intentionally absent: it's split across 11 release
+# subdirectories on s3://fcp-indi/, so it needs a dedicated --data-mirror
+# pointing at one release at a time.
+_OPENNEURO_DATASETS = {
+    "dortmund": "ds005385",
+    "srm":      "ds003775",
+    "trt":      "ds004148",
+    "depress":  "ds003478",
+}
+
 
 # ─── Config ──────────────────────────────────────────────────────────────
 
@@ -189,11 +201,11 @@ def _compute_slicing(
 
 
 def _region_safety_warning(cfg: Config, dataset: str, force: bool) -> None:
-    if dataset == "dortmund" and cfg.region != "us-east-1":
+    if dataset in _OPENNEURO_DATASETS and cfg.region != "us-east-1":
         msg = (
-            f"⚠  Dortmund raw data lives in s3://openneuro.org (us-east-1). "
+            f"⚠  {dataset} raw data lives in s3://openneuro.org (us-east-1). "
             f"Running jobs in {cfg.region} will incur cross-region egress "
-            f"(~$0.02/GB × ~24 GB = ~$0.50 per run). "
+            f"(~$0.02/GB). "
         )
         if force:
             print(msg + "Proceeding because --confirm-cross-region was passed.", file=sys.stderr)
@@ -319,8 +331,15 @@ def cmd_submit(args) -> int:
     source_flags = " ".join(parts)
 
     data_mirror = args.data_mirror
-    if data_mirror is None and args.dataset == "lemon":
-        data_mirror = f"s3://{cfg.bucket}/{cfg.mirrors_prefix}lemon/"
+    if data_mirror is None:
+        if args.dataset == "lemon":
+            # LEMON has no public S3 mirror — pulled into our bucket once,
+            # then read by every container.
+            data_mirror = f"s3://{cfg.bucket}/{cfg.mirrors_prefix}lemon/"
+        elif args.dataset in _OPENNEURO_DATASETS:
+            # Stream straight from OpenNeuro's public bucket (us-east-1).
+            # Job role grants s3:GetObject + s3:ListBucket on openneuro.org.
+            data_mirror = f"s3://openneuro.org/{_OPENNEURO_DATASETS[args.dataset]}/"
 
     print(f"run_id          : {run_id}")
     print(f"git_sha         : {git_sha}")
@@ -637,7 +656,11 @@ def main() -> int:
     p_sub.add_argument("--per-slice", type=int, default=None,
                        help="Explicit subjects-per-slice. Overrides slice-size math.")
     p_sub.add_argument("--data-mirror", default=None,
-                       help="Optional s3:// URI for staged raw data (LEMON).")
+                       help="Override the s3:// URI for raw data. Auto-defaults: "
+                            "LEMON → mirrors_prefix in your bucket; "
+                            "dortmund/srm/trt/depress → s3://openneuro.org/dsXXXXXX/. "
+                            "Required for HBN (point at one release, e.g. "
+                            "s3://fcp-indi/data/Projects/HBN/BIDS_EEG/cmi_bids_R1/).")
     p_sub.add_argument("--confirm-cross-region", action="store_true")
     p_sub.add_argument("--follow", action="store_true",
                        help="Tail job status until the merge job terminates.")
