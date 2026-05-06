@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -721,12 +722,28 @@ def main():
 
         logger.info("Merge mode: combining checkpoint directories")
 
+        # When merging across multiple datasets, prefix each subject_id with
+        # the source dataset's name so independent subjects with colliding IDs
+        # (e.g. SRM's sub-001 vs Dortmund's sub-001) don't appear as duplicates
+        # and can be attributed back to their dataset in subjects.csv. The
+        # prefix is the merge_dir's parent directory name (e.g. "lemon" from
+        # "norms_merge_in/lemon/subjects/"). Single-merge-dir invocations keep
+        # the legacy unprefixed format so the cloud per-run merge job is
+        # unaffected.
+        multi_source = len(args.merge_dir) > 1
+        def _prefix_for(merge_path: Path) -> str:
+            if not multi_source:
+                return ""
+            raw = merge_path.parent.name or merge_path.name
+            return re.sub(r"[^A-Za-z0-9]+", "", raw)
+
         subjects_for_norms = []
         source_counts = {}
         for merge_path in args.merge_dir:
             if not merge_path.exists():
                 logger.warning(f"Merge dir not found: {merge_path}")
                 continue
+            prefix = _prefix_for(merge_path)
             count = 0
             for fpath in sorted(merge_path.glob("*.json")):
                 try:
@@ -735,6 +752,8 @@ def main():
                 except (json.JSONDecodeError, OSError) as exc:
                     logger.warning(f"Skipping corrupt file {fpath.name}: {exc}")
                     continue
+                if prefix:
+                    data["subject_id"] = f"{prefix}_{data['subject_id']}"
                 # Tag the source directory for provenance
                 data["source_dir"] = str(merge_path)
                 subjects_for_norms.append(data)
@@ -746,7 +765,9 @@ def main():
             logger.error("No subjects loaded from any merge directory. Exiting.")
             sys.exit(1)
 
-        # Check for duplicate subjects (same person in both datasets)
+        # Duplicate detection. With multi_source prefixing, cross-dataset ID
+        # collisions are namespaced apart, so anything flagged here is a true
+        # within-source duplicate and worth investigating.
         seen_ids = {}
         duplicates = []
         for s in subjects_for_norms:
@@ -756,9 +777,8 @@ def main():
             seen_ids[key] = s.get("source_dir", "unknown")
         if duplicates:
             logger.warning(
-                f"Found {len(duplicates)} duplicate subject+condition entries. "
-                f"First 5: {duplicates[:5]}. Keeping all — ensure datasets "
-                f"don't share subjects to avoid violating independence."
+                f"Found {len(duplicates)} duplicate subject+condition entries "
+                f"within a single source. First 5: {duplicates[:5]}."
             )
 
         logger.info(
@@ -822,23 +842,25 @@ def main():
         with open(output_dir / "merge_config.json", "w") as f:
             json.dump(merge_config, f, indent=2, default=str)
 
-        # Merge PSD checkpoints if available
-        psd_source_dirs = []
+        # Merge PSD checkpoints if available. Carry the same per-source
+        # prefix used for subject_ids so build_normative_psd's stem-based
+        # lookup (sub-001_ec_psd.npz → "sub-001_ec") matches the prefixed
+        # subject_id keys (lemon_sub-001_ec).
+        psd_source_dirs: list[tuple[str, Path]] = []
         for merge_path in args.merge_dir:
-            # PSD checkpoints are in a sibling directory to subjects/
             psd_candidate = merge_path.parent / "psd_checkpoints"
             if psd_candidate.exists() and list(psd_candidate.glob("*_psd.npz")):
-                psd_source_dirs.append(psd_candidate)
+                psd_source_dirs.append((_prefix_for(merge_path), psd_candidate))
 
         if psd_source_dirs:
             merged_psd_dir = output_dir / "psd_checkpoints"
             merged_psd_dir.mkdir(parents=True, exist_ok=True)
 
-            # Copy/symlink PSD files from all sources
             psd_count = 0
-            for psd_src in psd_source_dirs:
+            for prefix, psd_src in psd_source_dirs:
                 for npz_file in psd_src.glob("*_psd.npz"):
-                    dest = merged_psd_dir / npz_file.name
+                    new_name = f"{prefix}_{npz_file.name}" if prefix else npz_file.name
+                    dest = merged_psd_dir / new_name
                     if not dest.exists():
                         import shutil
                         shutil.copy2(npz_file, dest)
