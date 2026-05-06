@@ -27,6 +27,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -121,6 +122,52 @@ def _git_sha() -> str:
 def _make_run_id(dataset: str, channels: int) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{dataset}-{channels}ch-{stamp}"
+
+
+def _stage_openneuro_layout(ds_id: str, dest_dir: Path) -> int:
+    """Materialize a stub BIDS layout from s3://openneuro.org/<ds_id>/.
+
+    Downloads metadata files (participants.tsv, dataset_description.json)
+    with real content, and creates empty placeholder files for every EEG
+    file under sub-*/. The dataset loaders' iter_subject_files() only
+    needs filename enumeration + participants.tsv to compute slice
+    manifests, so the empty stubs are sufficient for submit-time work.
+    The actual EEG content is streamed to the Batch containers from
+    s3://openneuro.org/<ds_id>/ at run time via DATA_MIRROR.
+
+    Returns the number of stub EEG files created.
+    """
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.config import Config as BotoConfig
+
+    s3 = boto3.client(
+        "s3", region_name="us-east-1",
+        config=BotoConfig(signature_version=UNSIGNED),
+    )
+    bucket = "openneuro.org"
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for fname in ("participants.tsv", "dataset_description.json"):
+        try:
+            s3.download_file(bucket, f"{ds_id}/{fname}", str(dest_dir / fname))
+        except Exception:
+            pass  # not all datasets ship every metadata file
+
+    eeg_exts = (".edf", ".set", ".vhdr", ".bdf", ".fif")
+    n = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{ds_id}/sub-"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.lower().endswith(eeg_exts):
+                continue
+            rel = key[len(f"{ds_id}/"):]
+            target = dest_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+            n += 1
+    return n
 
 
 def _enumerate_eligible_subjects(
@@ -306,7 +353,27 @@ def cmd_submit(args) -> int:
     cfg = _load_config(args.config)
     _region_safety_warning(cfg, args.dataset, args.confirm_cross_region)
 
-    data_dir = args.data_dir or Path.home() / "Data" / "EEG" / args.dataset.upper()
+    # Resolve where to enumerate subjects from. Three paths:
+    #  (A) --data-dir explicit  → use it (legacy local-mirror workflow).
+    #  (B) OpenNeuro dataset, no --data-dir → stage a stub BIDS layout from
+    #      s3://openneuro.org/<ds_id>/ in a temp dir (zero local data needed).
+    #  (C) Non-OpenNeuro (LEMON), no --data-dir → fall back to ~/Data/EEG/<DS>/.
+    _stage_ctx = None  # holds the TemporaryDirectory until function returns
+    if args.data_dir is not None:
+        data_dir = args.data_dir
+    elif args.dataset in _OPENNEURO_DATASETS:
+        ds_id = _OPENNEURO_DATASETS[args.dataset]
+        _stage_ctx = tempfile.TemporaryDirectory(prefix=f"open-norm-{args.dataset}-")
+        data_dir = Path(_stage_ctx.name)
+        n_stubs = _stage_openneuro_layout(ds_id, data_dir)
+        print(
+            f"staged {n_stubs} EEG path stubs from s3://openneuro.org/{ds_id}/ "
+            f"(no local data download needed)",
+            file=sys.stderr,
+        )
+    else:
+        data_dir = Path.home() / "Data" / "EEG" / args.dataset.upper()
+
     if not data_dir.exists():
         sys.exit(
             f"Data dir not found: {data_dir}\n"
@@ -642,8 +709,10 @@ def main() -> int:
     _add_common(p_sub)
     p_sub.add_argument("--dataset", required=True, help="Dataset key (lemon, dortmund, ...)")
     p_sub.add_argument("--data-dir", type=Path, default=None,
-                       help="Local data dir for enumerating subjects. Defaults to "
-                            "~/Data/EEG/<DATASET>.")
+                       help="Local data dir for enumerating subjects. If omitted: "
+                            "OpenNeuro datasets (dortmund/srm/trt/depress) auto-stage "
+                            "filename-only stubs from s3://openneuro.org/dsXXXXXX/ in "
+                            "a temp dir; everything else falls back to ~/Data/EEG/<DATASET>.")
     p_sub.add_argument("--channels", type=int, choices=[19, 37], default=19)
     p_sub.add_argument("--condition", choices=["eo", "ec", "both"], default="both")
     p_sub.add_argument("--source", action="store_true")
