@@ -175,11 +175,13 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
     for category, cat_cells in sorted(by_category.items()):
         n = len(cat_cells)
 
-        # Build parallel arrays
+        # Build parallel arrays. Bands need U64 to fit ratio names like
+        # "(Delta+Theta)/(Alpha+Beta)" and "corrected_Alpha/HighBeta" — U20
+        # silently truncated them to ambiguous prefixes.
         bins = np.array([c.bin for c in cat_cells], dtype="U20")
         conditions = np.array([c.condition for c in cat_cells], dtype="U10")
         channels = np.array([c.channel for c in cat_cells], dtype="U80")
-        bands = np.array([c.band for c in cat_cells], dtype="U20")
+        bands = np.array([c.band for c in cat_cells], dtype="U64")
         metrics = np.array([c.metric for c in cat_cells], dtype="U40")
         means = np.array([c.mean for c in cat_cells], dtype=np.float64)
         sds = np.array([c.sd for c in cat_cells], dtype=np.float64)
