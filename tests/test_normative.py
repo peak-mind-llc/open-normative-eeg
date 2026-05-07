@@ -4,7 +4,12 @@ import json
 import numpy as np
 import pytest
 from open_normative.normative import build_normative, NormCell, _is_log_transform
-from open_normative.io import write_norms_json, write_norms_csv, read_norms_json
+from open_normative.io import (
+    read_norms_json,
+    write_norms_csv,
+    write_norms_json,
+    write_norms_npz,
+)
 
 
 def test_build_normative_basic(mock_subject_metrics):
@@ -131,3 +136,37 @@ def test_write_norms_csv(tmp_path, mock_subject_metrics):
         header = f.readline()
     assert "bin" in header
     assert "mean" in header
+
+
+def test_write_norms_npz_preserves_long_band_names(tmp_path):
+    """Regression: ratio band names like '(Delta+Theta)/(Alpha+Beta)' or
+    'corrected_Alpha/HighBeta' must round-trip through NPZ without
+    truncation. The bands array dtype must accommodate at least 64 chars
+    so future ratio additions don't silently lose data.
+    """
+    long_bands = [
+        "(Delta+Theta)/(Alpha+Beta)",          # 26 chars — was truncated to 20
+        "corrected_(Delta+Theta)/(Alpha+Beta)",  # 36 chars
+        "corrected_Alpha/HighBeta",             # 24 chars
+        "corrected_Theta/Beta1",                # 21 chars
+        "Theta/Beta",                           # 10 chars (control)
+    ]
+    cells = [
+        NormCell(
+            bin="20-29", condition="eo",
+            channel="Fz", band=b, metric="value",
+            n=10, mean=1.0, sd=0.1,
+            log_mean=None, log_sd=None,
+            log_transformed=False,
+            normality_p=None, percentiles={},
+        )
+        for b in long_bands
+    ]
+    write_norms_npz(cells, tmp_path)
+
+    data = np.load(tmp_path / "npz" / "scalp_power.npz", allow_pickle=False)
+    round_tripped = sorted(set(str(b) for b in data["bands"]))
+    assert sorted(long_bands) == round_tripped, (
+        f"NPZ truncated band names: expected {sorted(long_bands)!r}, "
+        f"got {round_tripped!r}"
+    )
