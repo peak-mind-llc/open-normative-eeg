@@ -10,11 +10,13 @@ from __future__ import annotations
 import csv
 import dataclasses
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
+from scipy.stats import norm as _norm_dist
 
 from open_normative.normative import NormCell, _PERCENTILE_POINTS
 
@@ -85,6 +87,7 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
         "bin", "condition", "channel", "band", "metric",
         "n", "mean", "sd", "log_mean", "log_sd", "log_transformed",
         "normality_p", "ci_lower", "ci_upper", "pi_lower", "pi_upper",
+        "skewness", "kurtosis", "transform_normalized",
     ]
     fieldnames = base_fields + pct_cols
 
@@ -109,6 +112,9 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
                 "ci_upper": cell.ci_upper,
                 "pi_lower": cell.pi_lower,
                 "pi_upper": cell.pi_upper,
+                "skewness": cell.skewness,
+                "kurtosis": cell.kurtosis,
+                "transform_normalized": cell.transform_normalized,
             }
             for p in _PERCENTILE_POINTS:
                 row[f"p{p}"] = cell.percentiles.get(str(p))
@@ -154,10 +160,15 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
         metadata.json            — index of all files + dimensions
 
     Each NPZ contains:
-        labels: structured array with (bin, condition, channel, band, metric)
+        bins, conditions, channels, bands, metrics: label arrays
         mean, sd, n: float arrays aligned with labels
         log_mean, log_sd: float arrays (NaN where not log-transformed)
         log_transformed: bool array
+        skewness, kurtosis: raw-distribution shape (NaN where n < 3)
+        normality_p: Shapiro p-value of the scoring space (NaN where n < 3)
+        transform_normalized: tri-state float (NaN/1.0/0.0)
+        percentile_points: 1D array of percentile points (e.g. [0.5, 1, ...])
+        percentiles: (n_cells, n_points) matrix aligned with percentile_points
 
     Returns dict of {category: n_cells} for logging.
     """
@@ -198,6 +209,37 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             [c.log_transformed for c in cat_cells], dtype=bool,
         )
 
+        # Disclosure arrays (Wood et al. 2024): raw skewness/kurtosis, the
+        # scoring-space normality p-value, and a tri-state transform_normalized
+        # flag (NaN=unknown, 1.0=True, 0.0=False). NaN encodes "not computed".
+        def _nan(x):
+            return float(x) if x is not None else np.nan
+
+        skewness = np.array([_nan(c.skewness) for c in cat_cells], dtype=np.float64)
+        kurtosis = np.array([_nan(c.kurtosis) for c in cat_cells], dtype=np.float64)
+        normality_p = np.array(
+            [_nan(c.normality_p) for c in cat_cells], dtype=np.float64
+        )
+        transform_normalized = np.array(
+            [np.nan if c.transform_normalized is None
+             else (1.0 if c.transform_normalized else 0.0)
+             for c in cat_cells],
+            dtype=np.float64,
+        )
+
+        # Percentiles as a (n_cells, n_points) matrix aligned with
+        # percentile_points, so the product can derive a robust (percentile-
+        # based) z-score. NaN where a cell had too few subjects.
+        percentile_points = np.array(_PERCENTILE_POINTS, dtype=np.float64)
+        percentiles = np.full(
+            (n, len(_PERCENTILE_POINTS)), np.nan, dtype=np.float64
+        )
+        for i, c in enumerate(cat_cells):
+            for j, p in enumerate(_PERCENTILE_POINTS):
+                v = c.percentiles.get(str(p))
+                if v is not None:
+                    percentiles[i, j] = float(v)
+
         out_path = npz_dir / f"{category}.npz"
         np.savez_compressed(
             out_path,
@@ -212,6 +254,12 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             log_mean=log_means,
             log_sd=log_sds,
             log_transformed=log_transformed,
+            skewness=skewness,
+            kurtosis=kurtosis,
+            normality_p=normality_p,
+            transform_normalized=transform_normalized,
+            percentile_points=percentile_points,
+            percentiles=percentiles,
         )
 
         file_manifest[category] = {
@@ -225,7 +273,7 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
 
     # Write metadata index
     meta = {
-        "format_version": 1,
+        "format_version": 2,
         "total_cells": len(cells),
         "categories": file_manifest,
         "age_bins": sorted(set(c.bin for c in cells)),
@@ -235,6 +283,126 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
         json.dump(meta, f, indent=2)
 
     return {cat: info["n_cells"] for cat, info in file_manifest.items()}
+
+
+def _pct_key(p: float) -> str:
+    """Format a percentile point as its NormCell.percentiles dict key.
+
+    Matches normative._compute_cell: integer points become "50", fractional
+    points become "0.5"/"99.5".
+    """
+    return str(int(p)) if float(p).is_integer() else str(p)
+
+
+def _npz_opt(x) -> Optional[float]:
+    """NaN in an NPZ float array encodes 'not computed' → None."""
+    x = float(x)
+    return None if math.isnan(x) else x
+
+
+def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
+    """Read NormCell objects back from a split NPZ directory.
+
+    Canonical reader for the product/consumers — handles both format_version 1
+    (no disclosure arrays) and 2. Note that NPZ never stored CI/PI, so those
+    fields come back as None; use norms.json for full fidelity.
+
+    Args:
+        npz_dir: Path to the `npz/` directory (contains metadata.json).
+
+    Returns:
+        List of NormCell objects across all category files.
+    """
+    npz_dir = Path(npz_dir)
+    meta = json.loads((npz_dir / "metadata.json").read_text())
+
+    cells: list[NormCell] = []
+    for _category, info in meta.get("categories", {}).items():
+        fpath = npz_dir / info["file"]
+        if not fpath.exists():
+            continue
+        d = np.load(fpath, allow_pickle=False)
+        n_cells = len(d["mean"])
+        has_disclosure = "skewness" in d.files
+        points = d["percentile_points"] if "percentile_points" in d.files else None
+        pct_matrix = d["percentiles"] if "percentiles" in d.files else None
+
+        for i in range(n_cells):
+            percentiles: dict = {}
+            if points is not None and pct_matrix is not None:
+                for j in range(len(points)):
+                    v = pct_matrix[i, j]
+                    if not math.isnan(v):
+                        percentiles[_pct_key(float(points[j]))] = float(v)
+
+            transform_normalized = None
+            if has_disclosure:
+                tn = float(d["transform_normalized"][i])
+                transform_normalized = None if math.isnan(tn) else bool(tn >= 0.5)
+
+            cells.append(NormCell(
+                bin=str(d["bins"][i]),
+                condition=str(d["conditions"][i]),
+                channel=str(d["channels"][i]),
+                band=str(d["bands"][i]),
+                metric=str(d["metrics"][i]),
+                n=int(d["n"][i]),
+                mean=float(d["mean"][i]),
+                sd=float(d["sd"][i]),
+                log_mean=_npz_opt(d["log_mean"][i]),
+                log_sd=_npz_opt(d["log_sd"][i]),
+                log_transformed=bool(d["log_transformed"][i]),
+                normality_p=_npz_opt(d["normality_p"][i]) if has_disclosure else None,
+                percentiles=percentiles,
+                skewness=_npz_opt(d["skewness"][i]) if has_disclosure else None,
+                kurtosis=_npz_opt(d["kurtosis"][i]) if has_disclosure else None,
+                transform_normalized=transform_normalized,
+            ))
+    return cells
+
+
+def robust_z_from_percentiles(
+    value: float,
+    points,
+    row,
+    n: int,
+    tail_min_n: int = 200,
+) -> Optional[float]:
+    """Percentile-derived robust z-score — the reference for product parity.
+
+    Mirrors open_normative.compare.compare_to_norms exactly: interpolate the
+    value's percentile rank from the stored percentile points, gate the tail
+    points (p0.5/p99.5) behind a minimum n, then take the inverse-normal CDF.
+
+    Args:
+        value: Patient value.
+        points: Percentile points (e.g. NPZ percentile_points).
+        row: Percentile values aligned with points (NaN where unavailable).
+        n: Cell sample size (drives tail gating).
+        tail_min_n: Below this n, clamp the rank to [1, 99].
+
+    Returns:
+        Robust z-score, or None if no usable percentiles.
+    """
+    from open_normative.compare import _interpolate_percentile
+
+    pct: dict = {}
+    for p, v in zip(points, row):
+        if v is None:
+            continue
+        fv = float(v)
+        if math.isnan(fv):
+            continue
+        pct[_pct_key(float(p))] = fv
+    if not pct:
+        return None
+
+    rank = _interpolate_percentile(value, pct)
+    if rank is None:
+        return None
+    lo, hi = (1.0, 99.0) if n < tail_min_n else (0.5, 99.5)
+    rank = min(max(rank, lo), hi)
+    return float(_norm_dist.ppf(rank / 100.0))
 
 
 def write_subjects_csv(subjects: list[dict], filepath: PathLike) -> None:

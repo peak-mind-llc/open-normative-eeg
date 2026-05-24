@@ -303,6 +303,16 @@ REPORT_PARAMS = {
     "disagreement": {
         "z_threshold": 1.5,
     },
+    # Robust (percentile-derived) z-score and distribution-trust flags.
+    # Wood et al. (2024): the parametric z assumes Gaussianity that EEG band
+    # power violates, so when a cell's scoring space fails the normality test
+    # we also report a robust z derived from the empirical percentile rank and
+    # flag the divergence between the two.
+    "robust_z": {
+        "normality_alpha": 0.05,        # scoring-space Shapiro p below this is "non-normal"
+        "discrepancy_threshold": 1.0,   # |parametric_z - robust_z| above this is flagged
+        "tail_percentile_min_n": 200,   # n below this: don't trust p0.5/p99.5, clamp to p1/p99
+    },
     "adjacency_19": {
         "Fp1": ["Fp2", "F3", "F7"],
         "Fp2": ["Fp1", "F4", "F8"],
