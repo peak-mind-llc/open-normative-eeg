@@ -35,7 +35,28 @@ def _is_log_transform(metric: str, band: str) -> bool:
         return True
     return "/" in band
 
-_PERCENTILE_POINTS = [1, 5, 10, 25, 50, 75, 90, 95, 99]
+
+def _scoring_space(arr: np.ndarray, metric: str, band: str) -> np.ndarray:
+    """Return the values in the space the z-score is computed in.
+
+    Log-transformed metrics are scored in natural-log space, so their
+    distribution properties (normality, intervals) must be evaluated there —
+    not on the raw, right-skewed values. Non-positive values are dropped for
+    log metrics (matching the log-mean/sd computation).
+    """
+    if _is_log_transform(metric, band):
+        return np.log(arr[arr > 0])
+    return arr
+
+
+# Shapiro-Wilk significance level: scoring-space p below this means the
+# distribution the z-score uses is not Gaussian, so the parametric z over- or
+# under-flags in the tails (Wood et al. 2024).
+_NORMALITY_ALPHA = 0.05
+
+# Tail points (0.5/2.5/97.5/99.5) widen the percentile-derived robust-z range
+# toward ±2.58σ. They require large n to be stable — consumers gate on n.
+_PERCENTILE_POINTS = [0.5, 1, 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5, 99, 99.5]
 
 _DEFAULT_AGE_BINS = [20, 30, 40, 50, 60, 70, 80]
 
@@ -79,8 +100,20 @@ class NormCell:
         log_mean: Mean of log-transformed values (None if not log-transformed).
         log_sd: SD of log-transformed values (None if not log-transformed).
         log_transformed: Whether log transformation was applied.
-        normality_p: Shapiro-Wilk p-value (None if n < 3).
-        percentiles: Dict of {"1": value, "5": ..., ..., "99": value}.
+        normality_p: Shapiro-Wilk p-value of the SCORING space — log space for
+            log-transformed metrics, raw values otherwise (None if n < 3). This
+            is the distribution the z-score actually uses, so it governs how
+            trustworthy the parametric z is.
+        percentiles: Dict of {"0.5": value, "1": ..., ..., "99.5": value}.
+        ci_lower/ci_upper: 95% CI for the mean (geometric, in raw units, for
+            log metrics).
+        pi_lower/pi_upper: 95% prediction interval for a new individual
+            (asymmetric in raw units for log metrics).
+        skewness: Skewness of the RAW values (Wood et al. disclosure ask).
+        kurtosis: Excess (Fisher) kurtosis of the RAW values.
+        transform_normalized: Whether the scoring space passes the Shapiro test
+            (normality_p >= alpha) — i.e. whether the transform actually
+            achieved approximate Gaussianity (None if n < 3).
     """
 
     bin: str
@@ -100,6 +133,9 @@ class NormCell:
     ci_upper: Optional[float] = None
     pi_lower: Optional[float] = None
     pi_upper: Optional[float] = None
+    skewness: Optional[float] = None
+    kurtosis: Optional[float] = None
+    transform_normalized: Optional[bool] = None
 
 
 def _compute_cell(
@@ -120,21 +156,39 @@ def _compute_cell(
     log_transformed = _is_log_transform(metric, band)
     log_mean = None
     log_sd = None
+    n_log = 0
     if log_transformed:
         positive = arr[arr > 0]
-        if len(positive) > 0:
+        n_log = len(positive)
+        if n_log > 0:
             log_arr = np.log(positive)
             log_mean = float(np.mean(log_arr))
-            log_sd = float(np.std(log_arr, ddof=1)) if len(log_arr) > 1 else 0.0
+            log_sd = float(np.std(log_arr, ddof=1)) if n_log > 1 else 0.0
 
-    # Shapiro-Wilk normality test (requires n >= 3).
+    # Distribution shape of the RAW values — Wood et al. (2024) ask qEEG
+    # databases to disclose skewness and kurtosis, since slight departures from
+    # Gaussian inflate tail false positives.
+    skewness = None
+    kurtosis = None
+    if n >= 3 and sd > 0:
+        skewness = float(stats.skew(arr))
+        kurtosis = float(stats.kurtosis(arr, fisher=True))
+
+    # Shapiro-Wilk normality test on the SCORING space (log space for log
+    # metrics) — this is the distribution the z-score actually uses, so it is
+    # what determines whether the parametric z is trustworthy. transform_
+    # normalized flags whether the transform actually achieved Gaussianity.
     normality_p = None
-    if n >= 3:
+    transform_normalized = None
+    scoring = _scoring_space(arr, metric, band)
+    if len(scoring) >= 3 and float(np.std(scoring, ddof=1)) > 0:
         try:
-            _, normality_p = stats.shapiro(arr)
-            normality_p = float(normality_p)
+            _, p = stats.shapiro(scoring)
+            normality_p = float(p)
+            transform_normalized = bool(normality_p >= _NORMALITY_ALPHA)
         except Exception:
             normality_p = None
+            transform_normalized = None
 
     # Percentiles.
     percentiles: dict = {}
@@ -145,23 +199,27 @@ def _compute_cell(
         for p in _PERCENTILE_POINTS:
             percentiles[str(p)] = mean
 
-    # 95% confidence interval for the mean.
-    ci_lower = None
-    ci_upper = None
-    if n >= 2 and sd > 0:
-        se = sd / np.sqrt(n)
+    # 95% CI for the mean and 95% prediction interval for a new individual.
+    # For log metrics these are computed in log space and exponentiated, giving
+    # asymmetric, strictly-positive intervals in raw units (a symmetric raw-
+    # space interval is wrong for skewed power — it can even go negative).
+    ci_lower = ci_upper = None
+    pi_lower = pi_upper = None
+    if log_transformed and log_sd is not None and log_sd > 0 and n_log >= 2:
+        t_crit = float(stats.t.ppf(0.975, df=n_log - 1))
+        se_log = log_sd / np.sqrt(n_log)
+        spread = log_sd * np.sqrt(1 + 1 / n_log)
+        ci_lower = float(np.exp(log_mean - t_crit * se_log))
+        ci_upper = float(np.exp(log_mean + t_crit * se_log))
+        pi_lower = float(np.exp(log_mean - t_crit * spread))
+        pi_upper = float(np.exp(log_mean + t_crit * spread))
+    elif not log_transformed and n >= 2 and sd > 0:
         t_crit = float(stats.t.ppf(0.975, df=n - 1))
+        se = sd / np.sqrt(n)
         ci_lower = float(mean - t_crit * se)
         ci_upper = float(mean + t_crit * se)
-
-    # 95% prediction interval for a new individual observation.
-    # PI is wider than CI — it answers "where would a new healthy person fall?"
-    pi_lower = None
-    pi_upper = None
-    if n >= 2 and sd > 0:
-        t_crit_pi = float(stats.t.ppf(0.975, df=n - 1))
-        pi_lower = float(mean - t_crit_pi * sd * np.sqrt(1 + 1 / n))
-        pi_upper = float(mean + t_crit_pi * sd * np.sqrt(1 + 1 / n))
+        pi_lower = float(mean - t_crit * sd * np.sqrt(1 + 1 / n))
+        pi_upper = float(mean + t_crit * sd * np.sqrt(1 + 1 / n))
 
     return NormCell(
         bin=bin_label,
@@ -181,6 +239,9 @@ def _compute_cell(
         ci_upper=ci_upper,
         pi_lower=pi_lower,
         pi_upper=pi_upper,
+        skewness=skewness,
+        kurtosis=kurtosis,
+        transform_normalized=transform_normalized,
     )
 
 

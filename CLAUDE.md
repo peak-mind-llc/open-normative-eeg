@@ -23,6 +23,7 @@ python -m pytest tests/ --ignore=tests/test_pipeline.py --ignore=tests/test_prep
 - Supports both 19-channel 10-20 and 37-channel 10-10 montages (`--channels 19|37`)
 - 37ch set: 19 standard + AF3 AF4 FC3 FC1 FC2 FC4 FT7 FT8 CP3 CP1 CP2 CP4 TP7 TP8 PO3 PO4 P1 P2 (matched to pre-computed forward model)
 - Dual z-scores: uncorrected (raw band power) + corrected (periodic-only via specparam)
+- Distribution honesty (Wood et al. 2024): norm cells carry raw `skewness`/`kurtosis`, a scoring-space `normality_p`, and a `transform_normalized` flag; `compare.py` reports a percentile-derived `robust_z` alongside the parametric z and flags non-normal cells (`parametric_z_unreliable`) and divergence (`z_discrepancy_flag`). See `scripts/distribution_report.py` (disclosure report) and `scripts/compute_trt_reliability.py` (ICC/MDC/heteroscedasticity from the TRT test-retest sessions).
 - Log-space subtraction for specparam: `periodic_log10 = log10(full_psd) - log10(aperiodic)`
 - `PIPELINE_PARAMS` in parameters.py is the single canonical config dict
 - Scripts use argparse, pathlib, checkpoint/resume pattern, logging to stderr
@@ -138,20 +139,25 @@ output_dir/
     graph_metrics.npz     — global efficiency, char path length (~6 KB)
 ```
 
-### NPZ Format
+### NPZ Format (`format_version: 2`)
 
 Each `.npz` file contains parallel arrays aligned by index:
 - `bins`: age bin labels (U20)
 - `conditions`: "ec" or "eo" (U10)
 - `channels`: channel/pair name (U80)
-- `bands`: band name (U20)
+- `bands`: band name (U64 — fits ratio names like `(Delta+Theta)/(Alpha+Beta)`)
 - `metrics`: metric name (U40)
 - `mean`, `sd`: float64 arrays for z-score computation
 - `n`: int32 sample count
 - `log_mean`, `log_sd`: float64 (NaN where not log-transformed)
 - `log_transformed`: bool array
+- `skewness`, `kurtosis`: float64 raw-distribution shape (NaN where n<3) — Wood et al. (2024) disclosure
+- `normality_p`: float64 Shapiro p-value of the **scoring space** (log space for log metrics; NaN where n<3)
+- `transform_normalized`: float64 tri-state (NaN=unknown, 1.0=True, 0.0=False) — did the transform achieve Gaussianity?
+- `percentile_points`: 1D float64 of the 13 percentile points `[0.5,1,2.5,5,10,25,50,75,90,95,97.5,99,99.5]`
+- `percentiles`: (n_cells × 13) float64 matrix aligned with `percentile_points` — lets the product derive a robust (percentile-based) z-score
 
-**Total NPZ size: ~24 MB** vs ~1.1 GB JSON (46x compression).
+**Total NPZ size: ~30 MB** vs ~1.1 GB JSON (the percentile matrix added ~6 MB over v1).
 
 For product integration, load only the NPZ files needed:
 - Basic z-score report: `scalp_power.npz` + `scalp_connectivity.npz` = ~2.3 MB

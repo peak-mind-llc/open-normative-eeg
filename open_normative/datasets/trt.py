@@ -123,18 +123,31 @@ class TRTLoader(DatasetLoader):
                 metadata=metadata,
             )
 
-    def iter_subject_files(self, data_dir: Path) -> Iterator[SubjectFileRecord]:
-        """Yield SubjectFileRecord for each subject/condition without loading data."""
+    def iter_subject_files(
+        self,
+        data_dir: Path,
+        sessions: tuple[str, ...] = ("session1",),
+    ) -> Iterator[SubjectFileRecord]:
+        """Yield SubjectFileRecord for each subject/condition without loading data.
+
+        Args:
+            data_dir: Dataset root.
+            sessions: Session labels to include. Defaults to ("session1",) so
+                normative builds are unchanged; the test-retest reliability
+                pipeline passes e.g. ("session1", "session2"). The session label
+                is recorded in metadata["session"].
+        """
         participants = self._load_participants(data_dir)
 
-        vhdr_files = sorted(
-            list(data_dir.glob(
-                "sub-*/ses-session1/eeg/*_task-eyesclosed_eeg.vhdr"
+        vhdr_files = []
+        for ses in sessions:
+            vhdr_files += list(data_dir.glob(
+                f"sub-*/ses-{ses}/eeg/*_task-eyesclosed_eeg.vhdr"
             ))
-            + list(data_dir.glob(
-                "sub-*/ses-session1/eeg/*_task-eyesopen_eeg.vhdr"
+            vhdr_files += list(data_dir.glob(
+                f"sub-*/ses-{ses}/eeg/*_task-eyesopen_eeg.vhdr"
             ))
-        )
+        vhdr_files = sorted(vhdr_files)
 
         for vhdr_path in vhdr_files:
             subject_id = None
@@ -152,7 +165,11 @@ class TRTLoader(DatasetLoader):
             info = participants.get(subject_id, {})
             age = info.get("age", float("nan"))
             sex = info.get("sex", "")
-            metadata = {"source_file": str(vhdr_path), **info}
+            metadata = {
+                "source_file": str(vhdr_path),
+                "session": self._extract_session(vhdr_path),
+                **info,
+            }
 
             yield SubjectFileRecord(
                 subject_id=subject_id,
@@ -162,6 +179,14 @@ class TRTLoader(DatasetLoader):
                 filepath=vhdr_path,
                 metadata=metadata,
             )
+
+    @staticmethod
+    def _extract_session(filepath: Path) -> str | None:
+        """Extract the session label (e.g. 'session1') from the BIDS path."""
+        for part in filepath.parts:
+            if part.startswith("ses-"):
+                return part[len("ses-"):]
+        return None
 
     @staticmethod
     def _extract_condition(filepath: Path) -> str | None:

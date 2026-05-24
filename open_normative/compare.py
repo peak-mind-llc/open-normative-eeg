@@ -37,6 +37,14 @@ class ComparisonResult:
         norm_n: Number of subjects in the matched normative cell.
         bin: Age bin label of the matched cell.
         low_confidence: True when norm_n < 10.
+        robust_z: Percentile-derived z-score (inverse-normal of the empirical
+            percentile rank). Makes no Gaussian assumption, so it diverges from
+            z_score exactly when the distribution is non-normal.
+        normality_p: Scoring-space Shapiro p-value of the matched cell.
+        parametric_z_unreliable: True when normality_p < alpha — the parametric
+            z (and its ±2/±3 cutoffs) over- or under-flag in the tails.
+        z_discrepancy: |z_score - robust_z|.
+        z_discrepancy_flag: True when z_discrepancy exceeds the threshold.
     """
 
     channel: str
@@ -55,6 +63,11 @@ class ComparisonResult:
     p_value: Optional[float] = None
     fdr_significant: Optional[bool] = None
     fdr_threshold: Optional[float] = None
+    robust_z: Optional[float] = None
+    normality_p: Optional[float] = None
+    parametric_z_unreliable: bool = False
+    z_discrepancy: Optional[float] = None
+    z_discrepancy_flag: bool = False
 
 
 def _match_bin(age: int | float, bin_label: str) -> bool:
@@ -178,6 +191,7 @@ def compare_to_norms(
     condition: str,
     apply_fdr: bool = True,
     fdr_alpha: float = 0.05,
+    robust_config: Optional[dict] = None,
 ) -> list[ComparisonResult]:
     """Compare clinical metrics against a normative database.
 
@@ -198,6 +212,13 @@ def compare_to_norms(
         List of ComparisonResult, one per matched (channel, band, metric).
         Cells without a matching age bin or condition are silently skipped.
     """
+    if robust_config is None:
+        from open_normative.parameters import REPORT_PARAMS
+        robust_config = REPORT_PARAMS.get("robust_z", {})
+    normality_alpha = robust_config.get("normality_alpha", 0.05)
+    discrepancy_threshold = robust_config.get("discrepancy_threshold", 1.0)
+    tail_min_n = robust_config.get("tail_percentile_min_n", 200)
+
     # Index norms by (bin, condition, channel, band, metric) for fast lookup.
     norm_index: dict[tuple, NormCell] = {}
     for cell in norms:
@@ -246,6 +267,26 @@ def compare_to_norms(
                 # Interpolate percentile rank.
                 pct_rank = _interpolate_percentile(raw_value, cell.percentiles)
 
+                # Percentile-derived robust z — inverse-normal of the empirical
+                # rank. Tail points (p0.5/p99.5) need large n to be stable; below
+                # the gate, clamp the rank to [1, 99] so the robust z doesn't
+                # over-reach into tails the sample can't actually resolve.
+                robust_z: Optional[float] = None
+                if pct_rank is not None:
+                    lo, hi = (1.0, 99.0) if cell.n < tail_min_n else (0.5, 99.5)
+                    clamped = min(max(pct_rank, lo), hi)
+                    robust_z = float(_norm_dist.ppf(clamped / 100.0))
+
+                normality_p = getattr(cell, "normality_p", None)
+                parametric_unreliable = (
+                    normality_p is not None and normality_p < normality_alpha
+                )
+                z_discrepancy: Optional[float] = None
+                z_discrepancy_flag = False
+                if z_score is not None and robust_z is not None:
+                    z_discrepancy = abs(z_score - robust_z)
+                    z_discrepancy_flag = z_discrepancy > discrepancy_threshold
+
                 results.append(
                     ComparisonResult(
                         channel=channel,
@@ -261,6 +302,11 @@ def compare_to_norms(
                         low_confidence=cell.n < 10,
                         ci_lower=getattr(cell, "ci_lower", None),
                         ci_upper=getattr(cell, "ci_upper", None),
+                        robust_z=robust_z,
+                        normality_p=normality_p,
+                        parametric_z_unreliable=parametric_unreliable,
+                        z_discrepancy=z_discrepancy,
+                        z_discrepancy_flag=z_discrepancy_flag,
                     )
                 )
 
@@ -606,6 +652,10 @@ class ComparisonReport:
                     "cohen_d_label": er.cohen_d_label,
                     "severity_label": er.severity_label,
                     "percentile_rank": er.base.percentile_rank,
+                    "robust_z": er.base.robust_z,
+                    "parametric_z_unreliable": er.base.parametric_z_unreliable,
+                    "z_discrepancy": er.base.z_discrepancy,
+                    "z_discrepancy_flag": er.base.z_discrepancy_flag,
                     "norm_mean": er.base.norm_mean,
                     "norm_sd": er.base.norm_sd,
                     "norm_n": er.base.norm_n,
@@ -676,6 +726,12 @@ class ComparisonReport:
                     f"Cohen's d={er.cohen_d_label}, "
                     f"Severity: {er.severity_label}"
                 )
+                if er.base.parametric_z_unreliable and er.base.robust_z is not None:
+                    lines.append(
+                        f"    ⚠ distribution non-normal (Shapiro p="
+                        f"{er.normality_p:.3g}); σ-based z may over-flag — "
+                        f"robust z={er.base.robust_z:+.2f}"
+                    )
                 if pi_str:
                     lines.append(pi_str)
             lines.append("")
