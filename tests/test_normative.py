@@ -345,6 +345,44 @@ def test_read_norms_npz_roundtrips_v2(tmp_path):
     assert "99.5" in lc.percentiles
 
 
+def test_read_norms_npz_materializes_arrays_once(tmp_path, monkeypatch):
+    """Regression guard: NpzFile.__getitem__ re-decompresses the whole array on
+    every access, so indexing d['field'][i] inside the row loop is O(n²). The
+    reader must hoist each array out of the loop — verified by counting array
+    decompressions, which must stay ~constant per file, not ~n_fields*n_cells."""
+    n = 200
+    cells = [
+        NormCell(
+            bin="20-29", condition="eo", channel=f"C{i}", band="Alpha",
+            metric="absolute_power", n=50, mean=1.0 + i, sd=0.2,
+            log_mean=0.0, log_sd=0.2, log_transformed=True, normality_p=0.3,
+            percentiles={"50": 1.0 + i, "95": 2.0 + i},
+            skewness=0.5, kurtosis=0.1, transform_normalized=True,
+        )
+        for i in range(n)
+    ]
+    write_norms_npz(cells, tmp_path)
+
+    npz_cls = type(np.load(tmp_path / "npz" / "scalp_power.npz", allow_pickle=False))
+    orig_getitem = npz_cls.__getitem__
+    count = {"n": 0}
+
+    def counting(self, key):
+        count["n"] += 1
+        return orig_getitem(self, key)
+
+    monkeypatch.setattr(npz_cls, "__getitem__", counting)
+    loaded = read_norms_npz(tmp_path / "npz")
+
+    assert len(loaded) == n
+    assert loaded[5].channel == "C5" and abs(loaded[5].mean - 6.0) < 1e-9
+    # Buggy O(n²) reader does ~15 * n accesses (~3000); the fix does a small
+    # constant per file.
+    assert count["n"] < 40, (
+        f"O(n^2) regression: {count['n']} NPZ array decompressions for {n} cells"
+    )
+
+
 def test_read_norms_npz_v1_fallback(tmp_path):
     """A v1 NPZ dir (no disclosure arrays) loads with new fields defaulted."""
     npz_dir = tmp_path / "npz"

@@ -322,40 +322,52 @@ def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
         if not fpath.exists():
             continue
         d = np.load(fpath, allow_pickle=False)
-        n_cells = len(d["mean"])
+
+        # Materialize each array ONCE. NpzFile.__getitem__ re-decompresses the
+        # whole array from the zip on every access, so indexing d["field"][i]
+        # inside the row loop is O(n_cells) per access → O(n²) overall.
+        bins = d["bins"]; conditions = d["conditions"]; channels = d["channels"]
+        bands = d["bands"]; metrics = d["metrics"]; ns = d["n"]
+        means = d["mean"]; sds = d["sd"]
+        log_means = d["log_mean"]; log_sds = d["log_sd"]; log_tf = d["log_transformed"]
         has_disclosure = "skewness" in d.files
         points = d["percentile_points"] if "percentile_points" in d.files else None
         pct_matrix = d["percentiles"] if "percentiles" in d.files else None
+        if has_disclosure:
+            normality = d["normality_p"]; skew = d["skewness"]
+            kurt = d["kurtosis"]; transform_norm = d["transform_normalized"]
 
+        n_cells = len(means)
         for i in range(n_cells):
             percentiles: dict = {}
             if points is not None and pct_matrix is not None:
+                row = pct_matrix[i]
                 for j in range(len(points)):
-                    v = pct_matrix[i, j]
+                    v = row[j]
                     if not math.isnan(v):
                         percentiles[_pct_key(float(points[j]))] = float(v)
 
             transform_normalized = None
             if has_disclosure:
-                tn = float(d["transform_normalized"][i])
+                tn = float(transform_norm[i])
                 transform_normalized = None if math.isnan(tn) else bool(tn >= 0.5)
 
             cells.append(NormCell(
-                bin=str(d["bins"][i]),
-                condition=str(d["conditions"][i]),
-                channel=str(d["channels"][i]),
-                band=str(d["bands"][i]),
-                metric=str(d["metrics"][i]),
-                n=int(d["n"][i]),
-                mean=float(d["mean"][i]),
-                sd=float(d["sd"][i]),
-                log_mean=_npz_opt(d["log_mean"][i]),
-                log_sd=_npz_opt(d["log_sd"][i]),
-                log_transformed=bool(d["log_transformed"][i]),
-                normality_p=_npz_opt(d["normality_p"][i]) if has_disclosure else None,
+                bin=str(bins[i]),
+                condition=str(conditions[i]),
+                channel=str(channels[i]),
+                band=str(bands[i]),
+                metric=str(metrics[i]),
+                n=int(ns[i]),
+                mean=float(means[i]),
+                sd=float(sds[i]),
+                log_mean=_npz_opt(log_means[i]),
+                log_sd=_npz_opt(log_sds[i]),
+                log_transformed=bool(log_tf[i]),
+                normality_p=_npz_opt(normality[i]) if has_disclosure else None,
                 percentiles=percentiles,
-                skewness=_npz_opt(d["skewness"][i]) if has_disclosure else None,
-                kurtosis=_npz_opt(d["kurtosis"][i]) if has_disclosure else None,
+                skewness=_npz_opt(skew[i]) if has_disclosure else None,
+                kurtosis=_npz_opt(kurt[i]) if has_disclosure else None,
                 transform_normalized=transform_normalized,
             ))
     return cells
