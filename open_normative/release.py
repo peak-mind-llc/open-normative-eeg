@@ -151,6 +151,8 @@ def publish_to_s3(s3, bucket: str, version: str, payload_dir: Path,
             f"s3://{bucket}/{prefix} already exists — releases are immutable; "
             "bump the version instead of overwriting."
         )
+    # release.json first (clients validate the other files against it), then the
+    # payload files (_iter_payload_files excludes release.json to avoid a dup).
     for rel_path, abs_path in [("release.json", payload_dir / "release.json")] + \
             list(_iter_payload_files(payload_dir)):
         s3.upload_file(str(abs_path), bucket, prefix + rel_path)

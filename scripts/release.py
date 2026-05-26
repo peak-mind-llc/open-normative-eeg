@@ -46,15 +46,24 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
 
 
-def rebuild_dataset(version: str, ds: str, cfg) -> str:
-    """Submit a per-dataset cloud run (idempotent) and return its run_id."""
+def rebuild_dataset(version: str, ds: str, cfg, force: bool = False) -> str:
+    """Submit a per-dataset cloud run (idempotent) and return its run_id.
+
+    Idempotent by run_id: if a submission manifest for this version+dataset
+    already exists, reuse it (skip resubmission) unless force=True. The manifest
+    is written at submit time, so a previously-failed run is reused too — pass
+    --force-rebuild to resubmit from scratch.
+    """
     v = rel.normalize_version(version)
     run_id = f"release-v{v}-{ds}-{CHANNELS}ch"
-    if cloud_recompute._read_submission_manifest(cfg, run_id) is None:
+    existing = cloud_recompute._read_submission_manifest(cfg, run_id)
+    if force or existing is None:
         _run([sys.executable, "scripts/cloud_recompute.py", "submit",
               "--dataset", ds, "--run-id", run_id, *SUBMIT_FLAGS, "--follow"])
     else:
-        print(f"reusing existing run {run_id}")
+        print(f"reusing existing run {run_id} "
+              f"(submitted {existing.get('submitted_at', '?')}); "
+              f"pass --force-rebuild to redo")
     return run_id
 
 
@@ -88,7 +97,11 @@ def assemble(*, merged_dir: Path, payload_dir: Path) -> None:
 
 
 def _git_sha() -> str:
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).decode().strip()
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unknown"
 
 
 def main(argv=None) -> int:
@@ -98,6 +111,8 @@ def main(argv=None) -> int:
                     help="Comma-separated datasets (default: lemon,dortmund)")
     ap.add_argument("--publish", action="store_true", help="Upload artifacts to S3 + GitHub")
     ap.add_argument("--dry-run", action="store_true", help="Validate/verify; log publish, no writes")
+    ap.add_argument("--force-rebuild", action="store_true",
+                    help="Resubmit cloud runs even if a manifest for this version exists.")
     ap.add_argument("--config", type=Path, default=REPO_ROOT / "aws-config.yaml")
     args = ap.parse_args(argv)
 
@@ -113,7 +128,7 @@ def main(argv=None) -> int:
     dataset_run_ids = {}
     src_dirs = []
     for ds in datasets:
-        run_id = rebuild_dataset(v, ds, cfg)
+        run_id = rebuild_dataset(v, ds, cfg, force=args.force_rebuild)
         dataset_run_ids[ds] = run_id
         dest = merge_in / ds
         download_run(run_id, dest)
@@ -127,21 +142,27 @@ def main(argv=None) -> int:
     dist = REPO_ROOT / "dist" / "releases" / f"v{v}"
     assemble(merged_dir=merged_dir, payload_dir=dist)
 
+    sha = _git_sha()
+    ci_run = os.environ.get("GITHUB_RUN_ID")
+    if ci_run:
+        builder = f"ci:{ci_run}"
+        ci_run_url = (f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
+                      f"{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{ci_run}")
+    else:
+        builder = f"local:{os.environ.get('USER', 'unknown')}"
+        ci_run_url = None
     manifest = rel.build_release_manifest(
         version=v, payload_dir=dist,
         datasets=[{"name": d, "channels": CHANNELS,
                    "run_id": dataset_run_ids[d], "source": "cloud run"}
                   for d in datasets],
         merge_run_id="local",   # cross-dataset merge runs locally, not in the cloud
-        code={"git_sha": _git_sha(), "git_tag": f"v{v}",
-              "image": f"{IMAGE_REPO}:{_git_sha()[:12]}"},
+        # image tag matches publish-image.yml (docker metadata-action: 7-char short sha)
+        code={"git_sha": sha, "git_tag": f"v{v}", "image": f"{IMAGE_REPO}:{sha[:7]}"},
         format_versions={"norms_npz": 2, "psd": 2},
         s3_base=f"s3://{cfg.bucket}/releases/v{v}/",
-        builder=("ci:" + os.environ["GITHUB_RUN_ID"]) if os.environ.get("CI") else
-                ("local:" + os.environ.get("USER", "unknown")),
-        ci_run_url=(f"{os.environ.get('GITHUB_SERVER_URL')}/{os.environ.get('GITHUB_REPOSITORY')}"
-                    f"/actions/runs/{os.environ.get('GITHUB_RUN_ID')}")
-                   if os.environ.get("CI") else None,
+        builder=builder,
+        ci_run_url=ci_run_url,
     )
     rel.write_release_json(manifest, dist)
 
