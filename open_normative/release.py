@@ -90,3 +90,48 @@ def write_release_json(manifest: dict, payload_dir: Path) -> Path:
     out = payload_dir / "release.json"
     out.write_text(json.dumps(manifest, indent=2))
     return out
+
+
+def verify_payload(payload_dir: Path) -> list[str]:
+    """Return a list of verification problems; empty list == passes.
+
+    Mirrors the manual QC done during the percentile-feature work: percentile
+    self-checks, the unit-sanity magnitude bound (catches the SRM µV²/Hz bug),
+    format-version presence, and that the band-level npz/ split exists.
+    """
+    import numpy as np
+
+    problems: list[str] = []
+    psd_path = payload_dir / "norms_psd.npz"
+    if not psd_path.exists():
+        return [f"missing {psd_path.name}"]
+
+    d = np.load(psd_path, allow_pickle=False)
+    if "psd_format_version" not in d.files or int(d["psd_format_version"]) != 2:
+        problems.append("norms_psd.npz: psd_format_version missing or != 2")
+    if "percentiles" not in d.files:
+        problems.append("norms_psd.npz: missing percentiles array")
+    else:
+        pct, mean = d["percentiles"], d["mean"]
+        p50 = pct[..., 6]
+        valid = ~np.isnan(p50)
+        if valid.any():
+            med_diff = float(np.nanmedian(np.abs(p50[valid] - mean[valid])))
+            if med_diff > 0.25:
+                problems.append(
+                    f"norms_psd.npz: median |p50-mean| {med_diff:.3f} > 0.25 "
+                    "(possible skew/contamination)"
+                )
+            diffs = np.diff(pct, axis=-1)
+            if not bool(np.all((diffs >= -1e-4) | np.isnan(diffs))):
+                problems.append("norms_psd.npz: percentiles not monotonic")
+            if float(np.nanmax(pct[valid])) > 6.0:
+                problems.append(
+                    "norms_psd.npz: percentile magnitude implausibly high "
+                    "(>1e6 µV²/Hz — unit error?)"
+                )
+
+    if not (payload_dir / "npz" / "metadata.json").exists():
+        problems.append("npz/metadata.json missing (band-level split not generated)")
+
+    return problems

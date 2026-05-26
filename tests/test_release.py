@@ -90,3 +90,56 @@ def test_write_release_json_roundtrips(tmp_path):
     loaded = json.loads((payload / "release.json").read_text())
     assert loaded["version"] == "v0.2.0"
     assert all(a["path"] != "release.json" for a in loaded["artifacts"])
+
+
+def _write_norms_psd(path, *, version=2, p97_5=2.0, p50_offset=0.0, with_npz_meta=True):
+    """Write a minimal norms_psd.npz. percentiles in log10(µV²/Hz)."""
+    n_bins, n_cond, n_ch, n_freq, n_pts = 1, 1, 2, 3, 13
+    points = [0.5, 1, 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5, 99, 99.5]
+    mean = np.full((n_bins, n_cond, n_ch, n_freq), 0.5)
+    pct = np.zeros((n_bins, n_cond, n_ch, n_freq, n_pts))
+    for k in range(n_pts):
+        pct[..., k] = -1.0 + (p97_5 + 1.0) * (k / (n_pts - 1))
+    pct[..., 6] = mean + p50_offset
+    pct.sort(axis=-1)  # guarantee monotonic
+    path.parent.mkdir(parents=True, exist_ok=True)
+    kwargs = dict(mean=mean, sd=np.full_like(mean, 0.3),
+                  percentiles=pct.astype(np.float32),
+                  percentile_points=np.array(points),
+                  n=np.full((n_bins, n_cond), 100))
+    if version is not None:
+        kwargs["psd_format_version"] = version
+    np.savez_compressed(path, **kwargs)
+
+
+def test_verify_passes_clean_payload(tmp_path):
+    payload = tmp_path / "p"
+    _write_norms_psd(payload / "norms_psd.npz", version=2, p97_5=2.0)
+    (payload / "npz").mkdir(parents=True, exist_ok=True)
+    (payload / "npz" / "metadata.json").write_text('{"format_version": 2}')
+    assert rel.verify_payload(payload) == []
+
+
+def test_verify_flags_missing_version(tmp_path):
+    payload = tmp_path / "p"
+    _write_norms_psd(payload / "norms_psd.npz", version=None, p97_5=2.0)
+    (payload / "npz").mkdir(parents=True, exist_ok=True)
+    (payload / "npz" / "metadata.json").write_text("{}")
+    problems = rel.verify_payload(payload)
+    assert any("psd_format_version" in p for p in problems)
+
+
+def test_verify_flags_inflated_magnitude(tmp_path):
+    payload = tmp_path / "p"
+    _write_norms_psd(payload / "norms_psd.npz", version=2, p97_5=13.0)
+    (payload / "npz").mkdir(parents=True, exist_ok=True)
+    (payload / "npz" / "metadata.json").write_text("{}")
+    problems = rel.verify_payload(payload)
+    assert any("magnitude" in p for p in problems)
+
+
+def test_verify_flags_missing_band_metadata(tmp_path):
+    payload = tmp_path / "p"
+    _write_norms_psd(payload / "norms_psd.npz", version=2, p97_5=2.0)
+    problems = rel.verify_payload(payload)
+    assert any("metadata.json" in p for p in problems)
