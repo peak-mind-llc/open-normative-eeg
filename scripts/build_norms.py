@@ -27,15 +27,17 @@ import subprocess
 import sys
 import time
 import traceback
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from scipy import stats
 
 from open_normative.datasets import DATASETS
 from open_normative.io import write_norms_csv, write_norms_json, write_norms_npz, write_subjects_csv
-from open_normative.normative import build_normative
+from open_normative.normative import build_normative, _PERCENTILE_POINTS
 from open_normative.parameters import PIPELINE_PARAMS
 from open_normative.pipeline import process_resting
 
@@ -410,9 +412,15 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
     ch_idx = {ch: i for i, ch in enumerate(all_ch_names)}
 
     # Aggregate
+    n_points = len(_PERCENTILE_POINTS)
     mean_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan)
     sd_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan)
     n_arr = np.zeros((n_bins, n_conds), dtype=int)
+    # Distribution-honest additions (psd_format_version 2): per-frequency
+    # percentiles + Shapiro-Wilk normality, computed from the same per-subject
+    # stack used for mean/sd. float32 keeps `percentiles` (~46 MB) compact.
+    pct_arr = np.full((n_bins, n_conds, n_chs, n_freqs, n_points), np.nan, dtype=np.float32)
+    normality_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan, dtype=np.float32)
 
     for (b_label, cond), entries in grouped.items():
         bi = bin_idx.get(b_label)
@@ -433,6 +441,29 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         mean_arr[bi, ci] = np.nanmean(stacked, axis=0)
         sd_arr[bi, ci] = np.nanstd(stacked, axis=0, ddof=1)
 
+        # Per-frequency percentiles (need >=2 subjects). Reuse the band-level
+        # _PERCENTILE_POINTS; nanpercentile over the subject axis → (points,
+        # n_ch, n_freq), then move points to the last axis to match the
+        # documented (..., n_freq, n_points) layout.
+        if len(entries) >= 2:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                pct = np.nanpercentile(stacked, _PERCENTILE_POINTS, axis=0)
+            pct_arr[bi, ci] = np.moveaxis(pct, 0, -1).astype(np.float32)
+
+        # Shapiro-Wilk per (channel, freq) on the log (scoring) space, mirroring
+        # the band-level normality_p. NaN if <3 valid samples or zero variance.
+        if len(entries) >= 3:
+            for chi in range(n_chs):
+                for fi in range(n_freqs):
+                    col = stacked[:, chi, fi]
+                    col = col[~np.isnan(col)]
+                    if col.size >= 3 and np.std(col, ddof=1) > 0:
+                        try:
+                            normality_arr[bi, ci, chi, fi] = float(stats.shapiro(col).pvalue)
+                        except Exception:
+                            pass  # leave NaN
+
     np.savez_compressed(
         output_path,
         freqs=ref_freqs,
@@ -442,6 +473,10 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         mean=mean_arr,
         sd=sd_arr,
         n=n_arr,
+        percentile_points=np.array(_PERCENTILE_POINTS, dtype=np.float64),
+        percentiles=pct_arr,
+        normality_p=normality_arr,
+        psd_format_version=2,
     )
     logger.info(f"Saved normative PSD to {output_path}")
     logger.info(f"  Shape: {n_bins} bins × {n_conds} conditions × {n_chs} channels × {n_freqs} freqs")
