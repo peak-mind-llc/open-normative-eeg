@@ -222,3 +222,38 @@ def test_resolve_run_id_honors_explicit():
 def test_resolve_run_id_falls_back_to_timestamped():
     args = _argparse.Namespace(run_id=None, dataset="lemon", channels=37)
     assert cr._resolve_run_id(args).startswith("lemon-37ch-")
+
+
+_REL_CLI = _ilu.spec_from_file_location(
+    "release_cli", Path(__file__).resolve().parent.parent / "scripts" / "release.py"
+)
+relcli = _ilu.module_from_spec(_REL_CLI)
+import sys as _sys
+_sys.modules["release_cli"] = relcli
+_REL_CLI.loader.exec_module(relcli)
+
+
+def test_cli_assemble_generates_npz_split(tmp_path, monkeypatch):
+    """assemble() must regenerate the npz/ band-level split from norms.json."""
+    merged = tmp_path / "merged"
+    merged.mkdir()
+    _write_norms_psd(merged / "norms_psd.npz", version=2, p97_5=2.0)
+    (merged / "norms.json").write_text("[]")
+
+    called = {}
+
+    def fake_write_npz(cells, output_dir):
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        (Path(output_dir) / "metadata.json").write_text('{"format_version": 2}')
+        called["dir"] = str(output_dir)
+        return {}
+
+    monkeypatch.setattr(relcli, "write_norms_npz", fake_write_npz)
+    monkeypatch.setattr(relcli, "read_norms_json", lambda p: [])
+
+    payload = tmp_path / "payload"
+    relcli.assemble(merged_dir=merged, payload_dir=payload)
+
+    assert (payload / "norms_psd.npz").exists()
+    assert (payload / "npz" / "metadata.json").exists()
+    assert called["dir"].endswith("npz")
