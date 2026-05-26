@@ -86,7 +86,15 @@ class SRMLoader(DatasetLoader):
                 logger.warning("No demographics for %s — age will be NaN", subject_id)
 
             try:
-                raw = mne.io.read_raw_edf(str(edf_path), preload=True, verbose=False)
+                # SRM's EDF headers leave the physical-dimension field blank, so
+                # read_raw_edf cannot apply the µV→V scaling and would return data
+                # ~1e6× too large — PSDs then come out ~1e12× inflated versus the
+                # V²/Hz datasets (LEMON/Dortmund), poisoning merged absolute-power
+                # norms. units="uV" tells MNE the physical values are microvolts and
+                # scales them to SI volts, matching the other loaders.
+                raw = mne.io.read_raw_edf(
+                    str(edf_path), units="uV", preload=True, verbose=False
+                )
                 raw.pick("eeg")
                 raw = pick_standard_channels(raw, n_channels=self.n_channels)
             except Exception:
