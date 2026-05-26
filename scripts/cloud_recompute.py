@@ -124,6 +124,11 @@ def _make_run_id(dataset: str, channels: int) -> str:
     return f"{dataset}-{channels}ch-{stamp}"
 
 
+def _resolve_run_id(args) -> str:
+    """Use an explicit --run-id if given, else an auto timestamped id."""
+    return getattr(args, "run_id", None) or _make_run_id(args.dataset, args.channels)
+
+
 def _stage_openneuro_layout(ds_id: str, dest_dir: Path) -> int:
     """Materialize a stub BIDS layout from s3://openneuro.org/<ds_id>/.
 
@@ -386,7 +391,7 @@ def cmd_submit(args) -> int:
     total = len(eligible)
     slices, per_slice = _compute_slicing(total, args.slices, args.per_slice, cfg)
 
-    run_id = _make_run_id(args.dataset, args.channels)
+    run_id = _resolve_run_id(args)
     git_sha = _git_sha()
 
     parts = []
@@ -734,6 +739,9 @@ def main() -> int:
     p_sub.add_argument("--follow", action="store_true",
                        help="Tail job status until the merge job terminates.")
     p_sub.add_argument("--dry-run", action="store_true")
+    p_sub.add_argument("--run-id", default=None,
+                       help="Explicit run id (default: <dataset>-<channels>ch-<timestamp>). "
+                            "Used by the release orchestrator for idempotent named runs.")
 
     # status
     p_st = sub.add_parser("status", help="Show job status for a run (or recent runs)")

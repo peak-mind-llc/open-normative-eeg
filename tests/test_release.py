@@ -1,6 +1,7 @@
 """Tests for the release orchestrator core (open_normative/release.py)."""
 import json
 import hashlib
+import importlib.util as _ilu
 from pathlib import Path
 
 import numpy as np
@@ -200,3 +201,24 @@ def test_publish_refuses_to_overwrite_existing_version(tmp_path):
     s3.put_object(Bucket="bbb", Key="releases/v0.2.0/sentinel", Body=b"x")
     with pytest.raises(FileExistsError):
         rel.publish_to_s3(s3, "bbb", "0.2.0", payload, manifest)
+
+
+import argparse as _argparse
+import sys as _sys
+
+_CR_SPEC = _ilu.spec_from_file_location(
+    "cloud_recompute_t", Path(__file__).resolve().parent.parent / "scripts" / "cloud_recompute.py"
+)
+cr = _ilu.module_from_spec(_CR_SPEC)
+_sys.modules["cloud_recompute_t"] = cr
+_CR_SPEC.loader.exec_module(cr)
+
+
+def test_resolve_run_id_honors_explicit():
+    args = _argparse.Namespace(run_id="release-v0.2.0-lemon-37ch", dataset="lemon", channels=37)
+    assert cr._resolve_run_id(args) == "release-v0.2.0-lemon-37ch"
+
+
+def test_resolve_run_id_falls_back_to_timestamped():
+    args = _argparse.Namespace(run_id=None, dataset="lemon", channels=37)
+    assert cr._resolve_run_id(args).startswith("lemon-37ch-")
