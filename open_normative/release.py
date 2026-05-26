@@ -135,3 +135,33 @@ def verify_payload(payload_dir: Path) -> list[str]:
         problems.append("npz/metadata.json missing (band-level split not generated)")
 
     return problems
+
+
+def _releases_prefix(version: str) -> str:
+    return f"releases/v{normalize_version(version)}/"
+
+
+def publish_to_s3(s3, bucket: str, version: str, payload_dir: Path,
+                  manifest: dict) -> None:
+    """Upload the payload to s3://bucket/releases/vX.Y.Z/. Refuses to overwrite."""
+    prefix = _releases_prefix(version)
+    existing = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+    if existing.get("KeyCount", 0) > 0:
+        raise FileExistsError(
+            f"s3://{bucket}/{prefix} already exists — releases are immutable; "
+            "bump the version instead of overwriting."
+        )
+    for rel_path, abs_path in [("release.json", payload_dir / "release.json")] + \
+            list(_iter_payload_files(payload_dir)):
+        s3.upload_file(str(abs_path), bucket, prefix + rel_path)
+
+
+def update_latest_json(s3, bucket: str, version: str, manifest: dict) -> None:
+    v = normalize_version(version)
+    body = json.dumps({
+        "latest": f"v{v}",
+        "s3_base": f"s3://{bucket}/releases/v{v}/",
+        "release_json": f"s3://{bucket}/releases/v{v}/release.json",
+        "updated": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+    }, indent=2).encode()
+    s3.put_object(Bucket=bucket, Key="releases/latest.json", Body=body)

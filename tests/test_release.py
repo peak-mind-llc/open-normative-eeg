@@ -143,3 +143,60 @@ def test_verify_flags_missing_band_metadata(tmp_path):
     _write_norms_psd(payload / "norms_psd.npz", version=2, p97_5=2.0)
     problems = rel.verify_payload(payload)
     assert any("metadata.json" in p for p in problems)
+
+
+try:
+    import boto3
+    from moto import mock_aws
+except ImportError:
+    boto3 = None
+    mock_aws = None
+
+needs_aws = pytest.mark.skipif(boto3 is None, reason="boto3/moto not installed")
+
+
+@needs_aws
+@mock_aws
+def test_publish_uploads_and_writes_latest(tmp_path):
+    payload = _make_payload(tmp_path)
+    manifest = rel.build_release_manifest(
+        version="0.2.0", payload_dir=payload, datasets=[], merge_run_id="m",
+        code={"git_sha": "x", "git_tag": "v0.2.0", "image": None},
+        format_versions={"norms_npz": 2, "psd": 2}, s3_base="s3://bbb/releases/v0.2.0/",
+        builder="local:test",
+    )
+    rel.write_release_json(manifest, payload)
+
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket="bbb")
+
+    rel.publish_to_s3(s3, "bbb", "0.2.0", payload, manifest)
+
+    keys = {o["Key"] for o in s3.list_objects_v2(Bucket="bbb").get("Contents", [])}
+    assert "releases/v0.2.0/norms_psd.npz" in keys
+    assert "releases/v0.2.0/npz/scalp_power.npz" in keys
+    assert "releases/v0.2.0/release.json" in keys
+
+    rel.update_latest_json(s3, "bbb", "0.2.0", manifest)
+    latest = json.loads(
+        s3.get_object(Bucket="bbb", Key="releases/latest.json")["Body"].read()
+    )
+    assert latest["latest"] == "v0.2.0"
+    assert latest["release_json"] == "s3://bbb/releases/v0.2.0/release.json"
+
+
+@needs_aws
+@mock_aws
+def test_publish_refuses_to_overwrite_existing_version(tmp_path):
+    payload = _make_payload(tmp_path)
+    manifest = rel.build_release_manifest(
+        version="0.2.0", payload_dir=payload, datasets=[], merge_run_id="m",
+        code={"git_sha": "x", "git_tag": "v0.2.0", "image": None},
+        format_versions={"norms_npz": 2, "psd": 2}, s3_base="s3://bbb/releases/v0.2.0/",
+        builder="local:test",
+    )
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket="bbb")
+    s3.put_object(Bucket="bbb", Key="releases/v0.2.0/sentinel", Body=b"x")
+    with pytest.raises(FileExistsError):
+        rel.publish_to_s3(s3, "bbb", "0.2.0", payload, manifest)
