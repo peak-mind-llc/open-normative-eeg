@@ -27,6 +27,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,6 +35,18 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# OpenNeuro datasets that can be streamed directly from s3://openneuro.org
+# (us-east-1 public bucket). The job role policy in infra/aws/main.tf grants
+# read access. HBN is intentionally absent: it's split across 11 release
+# subdirectories on s3://fcp-indi/, so it needs a dedicated --data-mirror
+# pointing at one release at a time.
+_OPENNEURO_DATASETS = {
+    "dortmund": "ds005385",
+    "srm":      "ds003775",
+    "trt":      "ds004148",
+    "depress":  "ds003478",
+}
 
 
 # ─── Config ──────────────────────────────────────────────────────────────
@@ -109,6 +122,52 @@ def _git_sha() -> str:
 def _make_run_id(dataset: str, channels: int) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{dataset}-{channels}ch-{stamp}"
+
+
+def _stage_openneuro_layout(ds_id: str, dest_dir: Path) -> int:
+    """Materialize a stub BIDS layout from s3://openneuro.org/<ds_id>/.
+
+    Downloads metadata files (participants.tsv, dataset_description.json)
+    with real content, and creates empty placeholder files for every EEG
+    file under sub-*/. The dataset loaders' iter_subject_files() only
+    needs filename enumeration + participants.tsv to compute slice
+    manifests, so the empty stubs are sufficient for submit-time work.
+    The actual EEG content is streamed to the Batch containers from
+    s3://openneuro.org/<ds_id>/ at run time via DATA_MIRROR.
+
+    Returns the number of stub EEG files created.
+    """
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.config import Config as BotoConfig
+
+    s3 = boto3.client(
+        "s3", region_name="us-east-1",
+        config=BotoConfig(signature_version=UNSIGNED),
+    )
+    bucket = "openneuro.org"
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for fname in ("participants.tsv", "dataset_description.json"):
+        try:
+            s3.download_file(bucket, f"{ds_id}/{fname}", str(dest_dir / fname))
+        except Exception:
+            pass  # not all datasets ship every metadata file
+
+    eeg_exts = (".edf", ".set", ".vhdr", ".bdf", ".fif")
+    n = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{ds_id}/sub-"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.lower().endswith(eeg_exts):
+                continue
+            rel = key[len(f"{ds_id}/"):]
+            target = dest_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+            n += 1
+    return n
 
 
 def _enumerate_eligible_subjects(
@@ -189,11 +248,11 @@ def _compute_slicing(
 
 
 def _region_safety_warning(cfg: Config, dataset: str, force: bool) -> None:
-    if dataset == "dortmund" and cfg.region != "us-east-1":
+    if dataset in _OPENNEURO_DATASETS and cfg.region != "us-east-1":
         msg = (
-            f"⚠  Dortmund raw data lives in s3://openneuro.org (us-east-1). "
+            f"⚠  {dataset} raw data lives in s3://openneuro.org (us-east-1). "
             f"Running jobs in {cfg.region} will incur cross-region egress "
-            f"(~$0.02/GB × ~24 GB = ~$0.50 per run). "
+            f"(~$0.02/GB). "
         )
         if force:
             print(msg + "Proceeding because --confirm-cross-region was passed.", file=sys.stderr)
@@ -294,7 +353,27 @@ def cmd_submit(args) -> int:
     cfg = _load_config(args.config)
     _region_safety_warning(cfg, args.dataset, args.confirm_cross_region)
 
-    data_dir = args.data_dir or Path.home() / "Data" / "EEG" / args.dataset.upper()
+    # Resolve where to enumerate subjects from. Three paths:
+    #  (A) --data-dir explicit  → use it (legacy local-mirror workflow).
+    #  (B) OpenNeuro dataset, no --data-dir → stage a stub BIDS layout from
+    #      s3://openneuro.org/<ds_id>/ in a temp dir (zero local data needed).
+    #  (C) Non-OpenNeuro (LEMON), no --data-dir → fall back to ~/Data/EEG/<DS>/.
+    _stage_ctx = None  # holds the TemporaryDirectory until function returns
+    if args.data_dir is not None:
+        data_dir = args.data_dir
+    elif args.dataset in _OPENNEURO_DATASETS:
+        ds_id = _OPENNEURO_DATASETS[args.dataset]
+        _stage_ctx = tempfile.TemporaryDirectory(prefix=f"open-norm-{args.dataset}-")
+        data_dir = Path(_stage_ctx.name)
+        n_stubs = _stage_openneuro_layout(ds_id, data_dir)
+        print(
+            f"staged {n_stubs} EEG path stubs from s3://openneuro.org/{ds_id}/ "
+            f"(no local data download needed)",
+            file=sys.stderr,
+        )
+    else:
+        data_dir = Path.home() / "Data" / "EEG" / args.dataset.upper()
+
     if not data_dir.exists():
         sys.exit(
             f"Data dir not found: {data_dir}\n"
@@ -319,8 +398,15 @@ def cmd_submit(args) -> int:
     source_flags = " ".join(parts)
 
     data_mirror = args.data_mirror
-    if data_mirror is None and args.dataset == "lemon":
-        data_mirror = f"s3://{cfg.bucket}/{cfg.mirrors_prefix}lemon/"
+    if data_mirror is None:
+        if args.dataset == "lemon":
+            # LEMON has no public S3 mirror — pulled into our bucket once,
+            # then read by every container.
+            data_mirror = f"s3://{cfg.bucket}/{cfg.mirrors_prefix}lemon/"
+        elif args.dataset in _OPENNEURO_DATASETS:
+            # Stream straight from OpenNeuro's public bucket (us-east-1).
+            # Job role grants s3:GetObject + s3:ListBucket on openneuro.org.
+            data_mirror = f"s3://openneuro.org/{_OPENNEURO_DATASETS[args.dataset]}/"
 
     print(f"run_id          : {run_id}")
     print(f"git_sha         : {git_sha}")
@@ -623,8 +709,10 @@ def main() -> int:
     _add_common(p_sub)
     p_sub.add_argument("--dataset", required=True, help="Dataset key (lemon, dortmund, ...)")
     p_sub.add_argument("--data-dir", type=Path, default=None,
-                       help="Local data dir for enumerating subjects. Defaults to "
-                            "~/Data/EEG/<DATASET>.")
+                       help="Local data dir for enumerating subjects. If omitted: "
+                            "OpenNeuro datasets (dortmund/srm/trt/depress) auto-stage "
+                            "filename-only stubs from s3://openneuro.org/dsXXXXXX/ in "
+                            "a temp dir; everything else falls back to ~/Data/EEG/<DATASET>.")
     p_sub.add_argument("--channels", type=int, choices=[19, 37], default=19)
     p_sub.add_argument("--condition", choices=["eo", "ec", "both"], default="both")
     p_sub.add_argument("--source", action="store_true")
@@ -637,7 +725,11 @@ def main() -> int:
     p_sub.add_argument("--per-slice", type=int, default=None,
                        help="Explicit subjects-per-slice. Overrides slice-size math.")
     p_sub.add_argument("--data-mirror", default=None,
-                       help="Optional s3:// URI for staged raw data (LEMON).")
+                       help="Override the s3:// URI for raw data. Auto-defaults: "
+                            "LEMON → mirrors_prefix in your bucket; "
+                            "dortmund/srm/trt/depress → s3://openneuro.org/dsXXXXXX/. "
+                            "Required for HBN (point at one release, e.g. "
+                            "s3://fcp-indi/data/Projects/HBN/BIDS_EEG/cmi_bids_R1/).")
     p_sub.add_argument("--confirm-cross-region", action="store_true")
     p_sub.add_argument("--follow", action="store_true",
                        help="Tail job status until the merge job terminates.")

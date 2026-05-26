@@ -266,6 +266,11 @@ resource "aws_batch_compute_environment" "spot" {
     # Set e.g. 60 to cap Spot bids at 60% of on-demand.
     bid_percentage = null
   }
+
+  update_policy {
+    job_execution_timeout_minutes = 30
+    terminate_jobs_on_update      = false
+  }
 }
 
 resource "aws_batch_job_queue" "main" {

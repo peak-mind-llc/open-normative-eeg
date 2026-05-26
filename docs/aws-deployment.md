@@ -139,6 +139,66 @@ A new dataset is a **code change**, not a config change. Add a loader in `open_n
 The container image needs a rebuild to include the new loader. GH Actions
 publishes on every main-branch push that touches pipeline code.
 
+## Where the raw data has to live for `submit` to work
+
+`cloud_recompute.py submit` enumerates subjects at submit time so it can
+size the array job and write per-slice manifests. It does *not* read EEG
+content — only filenames and `participants.tsv`. There are two supported
+ways to satisfy that:
+
+### Option A — local mirror (`--data-dir` or default `~/Data/EEG/<DATASET>/`)
+
+The legacy path. Use this when:
+
+- The dataset isn't on a public AWS bucket (currently: **LEMON only**, hosted at GWDG in Germany).
+- You already keep a local copy and want submit to pick it up.
+
+```bash
+# LEMON — must exist locally before submit
+python scripts/lemon_download.py ~/Data/EEG/LEMON
+python scripts/cloud_recompute.py submit --dataset lemon --channels 37 ...
+
+# Any OpenNeuro dataset, with explicit local copy
+python scripts/dortmund_download.py ~/Data/EEG/DORTMUND
+python scripts/cloud_recompute.py submit --dataset dortmund --channels 37 \
+    --data-dir ~/Data/EEG/DORTMUND ...
+```
+
+The cloud containers still stream from S3 at run time (via the
+auto-defaulted `--data-mirror`); the local copy is only used by submit.
+
+### Option B — auto-stage from OpenNeuro (no local data)
+
+Default for OpenNeuro datasets (`dortmund`, `srm`, `trt`, `depress`)
+when `--data-dir` is omitted. Submit lists `s3://openneuro.org/dsXXXXXX/`,
+downloads `participants.tsv` + `dataset_description.json`, and creates
+empty placeholder files matching the BIDS layout in a temp dir. The
+loader's existing filename-glob enumeration walks those stubs to compute
+the slice manifest. Cleanup is automatic on process exit.
+
+```bash
+# Zero local data needed — everything lives in S3
+python scripts/cloud_recompute.py submit --dataset srm --channels 37 \
+    --source --ba-connectivity --dk-connectivity --save-psd --slices 8
+```
+
+What you'll see at the top of the output:
+
+```
+staged 153 EEG path stubs from s3://openneuro.org/ds003775/ (no local data download needed)
+```
+
+The unsigned S3 listing finishes in a few seconds for any of these
+datasets (a few thousand keys at most). Containers still pull real EEG
+content from `s3://openneuro.org/dsXXXXXX/` at run time exactly as in
+Option A.
+
+**HBN is not in this auto-list** — its data is split across 11 release
+subdirectories on `s3://fcp-indi/data/Projects/HBN/BIDS_EEG/cmi_bids_R{1..11}/`
+and you have to point `--data-mirror` at one release at a time. That
+case still requires a local copy of that release's BIDS root for
+submit-time enumeration (Option A).
+
 ## Lessons from the initial deployment
 
 - **Don't attach a custom `service_role` to the Batch compute environment.** AWS Batch now uses the `AWSServiceRoleForBatch` service-linked role automatically; passing a custom service role produces `ecs:DescribeClusters` denials and leaves the compute env in `INVALID`. The Terraform module in this repo already omits it.
