@@ -224,11 +224,33 @@ def test_resolve_run_id_falls_back_to_timestamped():
     assert cr._resolve_run_id(args).startswith("lemon-37ch-")
 
 
+def test_verify_flags_skew_when_monotonic_and_in_range(tmp_path):
+    """p50 far from mean must be flagged even when monotonic and magnitudes are sane."""
+    payload = tmp_path / "p"
+    path = payload / "norms_psd.npz"
+    path.parent.mkdir(parents=True)
+    points = [0.5, 1, 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5, 99, 99.5]
+    n_bins, n_cond, n_ch, n_freq, n_pts = 1, 1, 2, 3, 13
+    mean = np.full((n_bins, n_cond, n_ch, n_freq), 3.0)        # mean far above the body
+    pct = np.zeros((n_bins, n_cond, n_ch, n_freq, n_pts))
+    for k in range(n_pts):
+        pct[..., k] = -1.0 + 3.0 * (k / (n_pts - 1))           # ramp -1..2: p50~0.5, monotonic, max<6
+    np.savez_compressed(path, mean=mean, sd=np.full_like(mean, 0.3),
+                        percentiles=pct.astype(np.float32),
+                        percentile_points=np.array(points),
+                        n=np.full((n_bins, n_cond), 100), psd_format_version=2)
+    (payload / "npz").mkdir(parents=True, exist_ok=True)
+    (payload / "npz" / "metadata.json").write_text("{}")
+    problems = rel.verify_payload(payload)
+    assert any("p50-mean" in p for p in problems)        # skew flagged
+    assert not any("monotonic" in p for p in problems)   # not a monotonicity issue
+    assert not any("magnitude" in p for p in problems)   # not a magnitude issue
+
+
 _REL_CLI = _ilu.spec_from_file_location(
     "release_cli", Path(__file__).resolve().parent.parent / "scripts" / "release.py"
 )
 relcli = _ilu.module_from_spec(_REL_CLI)
-import sys as _sys
 _sys.modules["release_cli"] = relcli
 _REL_CLI.loader.exec_module(relcli)
 

@@ -23,13 +23,20 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
           aws-region: us-east-1
+      - name: Write aws-config.yaml
+        run: printf '%s' "$AWS_CONFIG_YAML" > aws-config.yaml
+        env:
+          AWS_CONFIG_YAML: ${{ secrets.AWS_CONFIG_YAML }}
       - name: Cut release
         run: python scripts/release.py "${GITHUB_REF_NAME}" --publish
       - name: GitHub Release
         run: |
+          awk -v v="${GITHUB_REF_NAME#v}" \
+            'index($0,"## ["v"]")==1{p=1;print;next} p&&/^## \[/{exit} p{print}' \
+            CHANGELOG.md > /tmp/notes.md
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
-            --notes-file <(sed -n "/## \[${GITHUB_REF_NAME#v}\]/,/## \[/p" CHANGELOG.md) \
+            --notes-file /tmp/notes.md \
             "dist/releases/${GITHUB_REF_NAME}/release.json"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

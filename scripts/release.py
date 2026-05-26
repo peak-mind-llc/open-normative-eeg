@@ -67,10 +67,23 @@ def rebuild_dataset(version: str, ds: str, cfg, force: bool = False) -> str:
     return run_id
 
 
-def download_run(run_id: str, dest: Path) -> None:
-    """Sync a run's out/ (subjects/ + psd_checkpoints/ + norms.*) into dest."""
-    _run([sys.executable, "scripts/cloud_recompute.py", "download", run_id,
-          "--output", str(dest)])
+def download_run(run_id: str, dest: Path, cfg) -> None:
+    """Sync a run's per-subject checkpoints into dest/subjects + dest/psd_checkpoints.
+
+    The local cross-dataset merge needs the per-subject JSON + PSD checkpoints,
+    which live at runs/<run_id>/subjects/ and runs/<run_id>/psd_checkpoints/ on S3
+    (batch_entrypoint.sh writes them there via --checkpoint-sync; the per-dataset
+    merged norms go to runs/<run_id>/out/). cloud_recompute's `download` subcommand
+    only fetches out/, so sync these two prefixes directly.
+    """
+    base = f"s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}"
+    for sub in ("subjects", "psd_checkpoints"):
+        (dest / sub).mkdir(parents=True, exist_ok=True)
+        cmd = ["aws", "s3", "sync", f"{base}/{sub}/", str(dest / sub),
+               "--region", cfg.region, "--no-progress"]
+        if cfg.profile:
+            cmd += ["--profile", cfg.profile]
+        _run(cmd)
 
 
 def merge_local(src_dirs: list[Path], merged_dir: Path) -> None:
@@ -90,8 +103,6 @@ def assemble(*, merged_dir: Path, payload_dir: Path) -> None:
     """
     payload_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(merged_dir / "norms_psd.npz", payload_dir / "norms_psd.npz")
-    if (merged_dir / "MANIFEST.txt").exists():
-        shutil.copy2(merged_dir / "MANIFEST.txt", payload_dir / "MANIFEST.txt")
     cells = read_norms_json(merged_dir / "norms.json")
     write_norms_npz(cells, payload_dir / "npz")
 
@@ -131,7 +142,7 @@ def main(argv=None) -> int:
         run_id = rebuild_dataset(v, ds, cfg, force=args.force_rebuild)
         dataset_run_ids[ds] = run_id
         dest = merge_in / ds
-        download_run(run_id, dest)
+        download_run(run_id, dest, cfg)
         src_dirs.append(dest)
 
     # cross-dataset merge runs LOCALLY (no cloud cross-dataset merge exists)

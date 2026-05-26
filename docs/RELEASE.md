@@ -22,5 +22,7 @@ Releases are **immutable** — to fix a bad release, publish a higher version (C
 overwrite an existing version prefix) and `latest.json` repoints automatically.
 
 ## Prerequisites
-- `aws-config.yaml` present (see `aws-config.example.yaml`).
-- CI secret `AWS_RELEASE_ROLE_ARN` (OIDC role with S3 + Batch access).
+- Local: `aws-config.yaml` present (see `aws-config.example.yaml`).
+- CI secrets:
+  - `AWS_RELEASE_ROLE_ARN` — OIDC role with S3 + Batch access (assumed via `configure-aws-credentials`).
+  - `AWS_CONFIG_YAML` — the full contents of `aws-config.yaml` (the workflow writes it to disk before running `release.py`, since the file is gitignored).
