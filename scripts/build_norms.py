@@ -318,6 +318,15 @@ def save_run_config(output_dir: Path, args: argparse.Namespace):
         json.dump(config, f, indent=2, default=str)
 
 
+# Unit-sanity bounds for a per-subject alpha-band (8–13 Hz) PSD median, in
+# V²/Hz. Clean EEG sits ~1e-14..1e-11 (observed LEMON/Dortmund/SRM range
+# 2.6e-14..9.5e-9); values far outside betray a unit error — e.g. a dataset
+# stored in µV²/Hz but treated as V²/Hz inflates power by ~1e12. See the SRM
+# blank-EDF-units bug (2026-05): its alpha median read ~1e0 before the fix.
+_PSD_ALPHA_UNIT_MIN = 1e-16
+_PSD_ALPHA_UNIT_MAX = 1e-7
+
+
 def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
                         age_bins: list, output_path: Path, logger):
     """Aggregate per-subject PSD curves into normative PSD statistics.
@@ -369,6 +378,7 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
     # {(bin_label, condition): [(ch_names, log10_psds), ...]}
     grouped = {}
     ref_freqs = None
+    suspect_units = []  # (stem, alpha_median) for checkpoints failing the unit check
 
     for fpath in psd_files:
         stem = fpath.stem.replace("_psd", "")  # e.g., "sub-010002_eo"
@@ -385,6 +395,15 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         psds = psd_data["psds"]  # (n_ch, n_freqs) in V²/Hz
         ch_names = psd_data["ch_names"]
 
+        # Unit-sanity check on the raw V²/Hz values before the µV² conversion.
+        alpha_mask = (freqs >= 8.0) & (freqs <= 13.0)
+        if np.any(alpha_mask):
+            alpha_med = float(np.nanmedian(psds[:, alpha_mask]))
+            if alpha_med > 0 and not (
+                _PSD_ALPHA_UNIT_MIN <= alpha_med <= _PSD_ALPHA_UNIT_MAX
+            ):
+                suspect_units.append((stem, alpha_med))
+
         if ref_freqs is None:
             ref_freqs = freqs
         elif len(freqs) != len(ref_freqs):
@@ -399,6 +418,16 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         if key not in grouped:
             grouped[key] = []
         grouped[key].append((ch_names, log10_psds))
+
+    if suspect_units:
+        examples = ", ".join(f"{s}={v:.2e}" for s, v in suspect_units[:5])
+        logger.warning(
+            "Unit-sanity: %d/%d PSD checkpoints have an alpha-band median outside "
+            "[%.0e, %.0e] V²/Hz — likely a unit mismatch (e.g. µV²/Hz mislabeled "
+            "as V²/Hz, ~1e12 inflation). Examples: %s",
+            len(suspect_units), len(psd_files),
+            _PSD_ALPHA_UNIT_MIN, _PSD_ALPHA_UNIT_MAX, examples,
+        )
 
     if not grouped or ref_freqs is None:
         logger.warning("No valid PSD data to aggregate.")

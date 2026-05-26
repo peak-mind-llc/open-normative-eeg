@@ -109,3 +109,27 @@ def test_n2_bin_has_percentiles_but_no_normality(tmp_path):
     assert int(d["n"][2, 0]) == 2                       # bin "40-49"
     assert not np.all(np.isnan(d["percentiles"][2, 0]))  # n >= 2 → present
     assert np.all(np.isnan(d["normality_p"][2, 0]))      # n < 3 → NaN
+
+
+def test_unit_guard_flags_misscaled_checkpoint(tmp_path, caplog):
+    """A checkpoint stored in µV²/Hz (not V²/Hz) must trigger the unit-sanity warning."""
+    psd_dir = tmp_path / "psd_checkpoints"
+    psd_dir.mkdir()
+    subjects = []
+    # clean subject: proper V²/Hz scale
+    _write_psd_checkpoint(psd_dir, "sub-clean", "ec",
+                          _TRUE_MEAN[None, :] + np.zeros((len(_CH), len(_FREQS))))
+    subjects.append({"subject_id": "sub-clean", "condition": "ec", "age": 25})
+    # mis-scaled subject: store µV²/Hz directly (~1e0, i.e. ~1e12 too large)
+    bad_uv2 = 10.0 ** (_TRUE_MEAN[None, :] + np.zeros((len(_CH), len(_FREQS))))
+    bn.save_psd_checkpoint(psd_dir, "sub-bad", "ec", _FREQS, bad_uv2.astype(np.float64), _CH)
+    subjects.append({"subject_id": "sub-bad", "condition": "ec", "age": 25})
+
+    out = tmp_path / "norms_psd.npz"
+    with caplog.at_level(logging.WARNING):
+        bn.build_normative_psd(psd_dir, subjects, [20, 30], out, logging.getLogger("unitguard"))
+
+    warnings_text = " ".join(r.message for r in caplog.records)
+    assert "Unit-sanity" in warnings_text
+    assert "sub-bad" in warnings_text       # mis-scaled one flagged
+    assert "sub-clean" not in warnings_text  # clean one not flagged
