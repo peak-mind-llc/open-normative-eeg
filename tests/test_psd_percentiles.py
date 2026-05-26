@@ -11,7 +11,10 @@ _SPEC = importlib.util.spec_from_file_location(
 bn = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(bn)
 
-_PCT = [0.5, 1, 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5, 99, 99.5]
+_PCT = list(bn._PERCENTILE_POINTS)  # keep in sync with the canonical source
+_P50_IDX = _PCT.index(50)
+_P2_5_IDX = _PCT.index(2.5)
+_P97_5_IDX = _PCT.index(97.5)
 _CH = ["Cz", "Pz"]
 _FREQS = np.array([2.0, 4.0, 8.0, 16.0, 32.0])
 _TRUE_MEAN = np.array([1.0, 0.8, 0.5, 0.0, -0.5])  # per-freq log10(µV²/Hz)
@@ -40,8 +43,14 @@ def _build(tmp_path, seed, n_full=400):
     _write_psd_checkpoint(psd_dir, "sub-9000", "ec",
                           _TRUE_MEAN[None, :] + np.zeros((len(_CH), len(_FREQS))))
     subjects.append({"subject_id": "sub-9000", "condition": "ec", "age": 35})
+    # bin "40-49": exactly 2 subjects → percentiles present, normality_p NaN (n<3)
+    for j in range(2):
+        vals = _TRUE_MEAN[None, :] + rng.normal(0.0, _TRUE_SD, size=(len(_CH), len(_FREQS)))
+        sid = f"sub-95{j:02d}"
+        _write_psd_checkpoint(psd_dir, sid, "ec", vals)
+        subjects.append({"subject_id": sid, "condition": "ec", "age": 45})
     out = tmp_path / "norms_psd.npz"
-    bn.build_normative_psd(psd_dir, subjects, [20, 30, 40], out, logging.getLogger("test"))
+    bn.build_normative_psd(psd_dir, subjects, [20, 30, 40, 50], out, logging.getLogger("test"))
     return np.load(out, allow_pickle=False)
 
 
@@ -61,7 +70,7 @@ def test_new_arrays_present_and_shaped(tmp_path):
 
 def test_p50_matches_mean(tmp_path):
     d = _build(tmp_path, 1)
-    p50 = d["percentiles"][0, 0, :, :, 6]
+    p50 = d["percentiles"][0, 0, :, :, _P50_IDX]
     np.testing.assert_allclose(p50, d["mean"][0, 0], atol=0.1)
 
 
@@ -74,8 +83,8 @@ def test_monotonic_along_points(tmp_path):
 def test_tails_bracket_two_sigma(tmp_path):
     d = _build(tmp_path, 3)
     mean, sd = d["mean"][0, 0], d["sd"][0, 0]
-    p2_5 = d["percentiles"][0, 0, :, :, 2]
-    p97_5 = d["percentiles"][0, 0, :, :, 10]
+    p2_5 = d["percentiles"][0, 0, :, :, _P2_5_IDX]
+    p97_5 = d["percentiles"][0, 0, :, :, _P97_5_IDX]
     assert np.all((p2_5 > mean - 2.5 * sd) & (p2_5 < mean - 1.4 * sd))
     assert np.all((p97_5 < mean + 2.5 * sd) & (p97_5 > mean + 1.4 * sd))
 
@@ -93,3 +102,10 @@ def test_existing_arrays_unchanged(tmp_path):
     assert d["sd"].dtype == np.float64
     assert list(d["ch_names"]) == _CH
     assert int(d["n"][0, 0]) == 400
+
+
+def test_n2_bin_has_percentiles_but_no_normality(tmp_path):
+    d = _build(tmp_path, 6)
+    assert int(d["n"][2, 0]) == 2                       # bin "40-49"
+    assert not np.all(np.isnan(d["percentiles"][2, 0]))  # n >= 2 → present
+    assert np.all(np.isnan(d["normality_p"][2, 0]))      # n < 3 → NaN

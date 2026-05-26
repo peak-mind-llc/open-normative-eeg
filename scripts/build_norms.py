@@ -333,6 +333,12 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         mean: (n_bins, n_conditions, n_channels, n_freqs) log10 PSD mean
         sd: (n_bins, n_conditions, n_channels, n_freqs) log10 PSD SD
         n: (n_bins, n_conditions) subject counts
+        percentile_points: (n_points,) percentile values (mirrors _PERCENTILE_POINTS)
+        percentiles: (n_bins, n_conditions, n_channels, n_freqs, n_points) float32,
+            log10 space; NaN where n < 2
+        normality_p: (n_bins, n_conditions, n_channels, n_freqs) float32 Shapiro-Wilk
+            p of the log space; NaN where n < 3
+        psd_format_version: scalar int (2); consumers branch on its presence
     """
     # Build lookup: subject_id → age, condition
     subject_info = {}
