@@ -453,7 +453,7 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
     n_arr = np.zeros((n_bins, n_conds), dtype=int)
     # Distribution-honest additions (psd_format_version 2): per-frequency
     # percentiles + Shapiro-Wilk normality, computed from the same per-subject
-    # stack used for mean/sd. float32 keeps `percentiles` (~46 MB) compact.
+    # stack used for mean/sd. float32 keeps `percentiles` compact (~4-5 MB).
     pct_arr = np.full((n_bins, n_conds, n_chs, n_freqs, n_points), np.nan, dtype=np.float32)
     normality_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan, dtype=np.float32)
 

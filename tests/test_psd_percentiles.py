@@ -62,7 +62,7 @@ def test_new_arrays_present_and_shaped(tmp_path):
     assert int(d["psd_format_version"]) == 2
     np.testing.assert_allclose(d["percentile_points"], _PCT)
     n_bins, n_cond, n_ch, n_freq = d["mean"].shape
-    assert d["percentiles"].shape == (n_bins, n_cond, n_ch, n_freq, 13)
+    assert d["percentiles"].shape == (n_bins, n_cond, n_ch, n_freq, len(_PCT))
     assert d["percentiles"].dtype == np.float32
     assert d["normality_p"].shape == (n_bins, n_cond, n_ch, n_freq)
     assert d["normality_p"].dtype == np.float32
@@ -129,7 +129,7 @@ def test_unit_guard_flags_misscaled_checkpoint(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         bn.build_normative_psd(psd_dir, subjects, [20, 30], out, logging.getLogger("unitguard"))
 
-    warnings_text = " ".join(r.message for r in caplog.records)
+    warnings_text = caplog.text
     assert "Unit-sanity" in warnings_text
     assert "sub-bad" in warnings_text       # mis-scaled one flagged
     assert "sub-clean" not in warnings_text  # clean one not flagged
