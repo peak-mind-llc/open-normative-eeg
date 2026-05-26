@@ -38,3 +38,55 @@ def test_pipeline_params_sha256_is_stable_and_hex():
     h2 = rel.pipeline_params_sha256()
     assert h1 == h2
     assert len(h1) == 64 and int(h1, 16) >= 0
+
+
+def _make_payload(tmp_path):
+    payload = tmp_path / "payload"
+    (payload / "npz").mkdir(parents=True)
+    (payload / "norms_psd.npz").write_bytes(b"PSD-BYTES")
+    (payload / "npz" / "scalp_power.npz").write_bytes(b"SCALP-BYTES")
+    (payload / "MANIFEST.txt").write_text("manifest")
+    return payload
+
+
+def test_sha256_file_matches_hashlib(tmp_path):
+    f = tmp_path / "x.bin"
+    f.write_bytes(b"hello")
+    assert rel.sha256_file(f) == hashlib.sha256(b"hello").hexdigest()
+
+
+def test_build_release_manifest_lists_every_file(tmp_path):
+    payload = _make_payload(tmp_path)
+    manifest = rel.build_release_manifest(
+        version="0.2.0",
+        payload_dir=payload,
+        datasets=[{"name": "lemon", "source": "s3://b/mirrors/lemon",
+                   "channels": 37, "run_id": "release-v0.2.0-lemon-37ch", "n_subjects": 176}],
+        merge_run_id="release-v0.2.0-merged-37ch",
+        code={"git_sha": "abc123", "git_tag": "v0.2.0", "image": "ghcr.io/x@sha256:..."},
+        format_versions={"norms_npz": 2, "psd": 2},
+        s3_base="s3://b/releases/v0.2.0/",
+        builder="local:test",
+    )
+    paths = {a["path"] for a in manifest["artifacts"]}
+    assert paths == {"norms_psd.npz", "npz/scalp_power.npz", "MANIFEST.txt"}
+    psd = next(a for a in manifest["artifacts"] if a["path"] == "norms_psd.npz")
+    assert psd["sha256"] == hashlib.sha256(b"PSD-BYTES").hexdigest()
+    assert psd["bytes"] == len(b"PSD-BYTES")
+    assert manifest["version"] == "v0.2.0"
+    assert manifest["pipeline_params_sha256"] == rel.pipeline_params_sha256()
+    assert manifest["datasets"][0]["name"] == "lemon"
+
+
+def test_write_release_json_roundtrips(tmp_path):
+    payload = _make_payload(tmp_path)
+    manifest = rel.build_release_manifest(
+        version="0.2.0", payload_dir=payload, datasets=[], merge_run_id="m",
+        code={"git_sha": "x", "git_tag": "v0.2.0", "image": None},
+        format_versions={"norms_npz": 2, "psd": 2}, s3_base="s3://b/releases/v0.2.0/",
+        builder="local:test",
+    )
+    rel.write_release_json(manifest, payload)
+    loaded = json.loads((payload / "release.json").read_text())
+    assert loaded["version"] == "v0.2.0"
+    assert all(a["path"] != "release.json" for a in loaded["artifacts"])
