@@ -219,6 +219,13 @@ def test_resolve_run_id_honors_explicit():
     assert cr._resolve_run_id(args) == "release-v0.2.0-lemon-37ch"
 
 
+def test_job_name_sanitizes_illegal_chars():
+    # Batch job names forbid dots; release run ids embed the version (v0.2.0).
+    assert cr._job_name("release-v0.2.0-lemon-37ch", "array") == "release-v0-2-0-lemon-37ch-array"
+    assert "." not in cr._job_name("release-v9.9.9-dortmund-37ch", "merge")
+    assert len(cr._job_name("x" * 200, "array")) == 128
+
+
 def test_resolve_run_id_falls_back_to_timestamped():
     args = _argparse.Namespace(run_id=None, dataset="lemon", channels=37)
     assert cr._resolve_run_id(args).startswith("lemon-37ch-")

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,13 @@ def _make_run_id(dataset: str, channels: int) -> str:
 def _resolve_run_id(args) -> str:
     """Use an explicit --run-id if given, else an auto timestamped id."""
     return getattr(args, "run_id", None) or _make_run_id(args.dataset, args.channels)
+
+
+def _job_name(run_id: str, suffix: str) -> str:
+    """AWS Batch job names allow only [A-Za-z0-9_-] (<=128 chars). run_ids may
+    contain other chars — e.g. a release version like v0.2.0 has dots — so
+    sanitize for the job name while leaving run_id (the S3 prefix) untouched."""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", f"{run_id}-{suffix}")[:128]
 
 
 def _stage_openneuro_layout(ds_id: str, dest_dir: Path) -> int:
@@ -439,7 +447,7 @@ def cmd_submit(args) -> int:
     print(f"wrote {slices} slice manifest(s) to s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}/slices/")
 
     array_resp = batch.submit_job(
-        jobName=f"{run_id}-array",
+        jobName=_job_name(run_id, "array"),
         jobQueue=cfg.job_queue,
         jobDefinition=cfg.array_jd,
         arrayProperties={"size": slices},
@@ -455,7 +463,7 @@ def cmd_submit(args) -> int:
     print(f"submitted array job : {array_id}")
 
     merge_resp = batch.submit_job(
-        jobName=f"{run_id}-merge",
+        jobName=_job_name(run_id, "merge"),
         jobQueue=cfg.job_queue,
         jobDefinition=cfg.merge_jd,
         dependsOn=[{"jobId": array_id, "type": "SEQUENTIAL"}],
