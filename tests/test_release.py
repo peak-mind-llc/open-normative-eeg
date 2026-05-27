@@ -226,6 +226,24 @@ def test_job_name_sanitizes_illegal_chars():
     assert len(cr._job_name("x" * 200, "array")) == 128
 
 
+def test_wait_terminal_survives_transient_network_error(monkeypatch):
+    """A DNS/network blip during --follow must not kill the poll; the job runs on AWS."""
+    from botocore.exceptions import EndpointConnectionError
+
+    calls = {"n": 0}
+
+    class FakeBatch:
+        def describe_jobs(self, jobs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise EndpointConnectionError(endpoint_url="https://batch.us-east-1.amazonaws.com/")
+            return {"jobs": [{"status": "SUCCEEDED"}]}
+
+    monkeypatch.setattr(cr.time, "sleep", lambda *_a, **_k: None)
+    assert cr._wait_terminal(FakeBatch(), "job-123", "merge") == "SUCCEEDED"
+    assert calls["n"] == 2   # retried once after the transient error, then succeeded
+
+
 def test_resolve_run_id_falls_back_to_timestamped():
     args = _argparse.Namespace(run_id=None, dataset="lemon", channels=37)
     assert cr._resolve_run_id(args).startswith("lemon-37ch-")

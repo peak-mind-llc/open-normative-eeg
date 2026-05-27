@@ -339,9 +339,25 @@ def _describe(batch, job_ids: list[str]) -> list[dict]:
 
 
 def _wait_terminal(batch, job_id: str, label: str) -> str:
+    from botocore.exceptions import BotoCoreError, ClientError
+
     last = None
+    transient_fails = 0
     while True:
-        jobs = _describe(batch, [job_id])
+        try:
+            jobs = _describe(batch, [job_id])
+            transient_fails = 0
+        except (BotoCoreError, ClientError) as exc:
+            # Transient network/DNS/throttle blip (e.g. laptop sleep or wifi drop
+            # during a long --follow). The job keeps running on AWS, so keep polling
+            # rather than killing the run; give up only after many failures in a row.
+            transient_fails += 1
+            if transient_fails > 40:
+                raise
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {label}: transient AWS error "
+                  f"({type(exc).__name__}); retry {transient_fails}...", file=sys.stderr)
+            time.sleep(15)
+            continue
         if not jobs:
             print(f"[{label}] describe_jobs empty for {job_id}; retrying...", file=sys.stderr)
             time.sleep(10)
