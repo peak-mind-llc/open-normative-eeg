@@ -262,27 +262,18 @@ _sys.modules["release_cli"] = relcli
 _REL_CLI.loader.exec_module(relcli)
 
 
-def test_cli_assemble_generates_npz_split(tmp_path, monkeypatch):
-    """assemble() must regenerate the npz/ band-level split from norms.json."""
+def test_cli_assemble_copies_npz_split(tmp_path):
+    """assemble() copies norms_psd.npz + the npz/ split from the merged output."""
     merged = tmp_path / "merged"
-    merged.mkdir()
+    (merged / "npz").mkdir(parents=True)
     _write_norms_psd(merged / "norms_psd.npz", version=2, p97_5=2.0)
-    (merged / "norms.json").write_text("[]")
-
-    called = {}
-
-    def fake_write_npz(cells, output_dir):
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        (Path(output_dir) / "metadata.json").write_text('{"format_version": 2}')
-        called["dir"] = str(output_dir)
-        return {}
-
-    monkeypatch.setattr(relcli, "write_norms_npz", fake_write_npz)
-    monkeypatch.setattr(relcli, "read_norms_json", lambda p: [])
+    (merged / "npz" / "metadata.json").write_text('{"format_version": 2}')
+    (merged / "npz" / "scalp_power.npz").write_bytes(b"x")
 
     payload = tmp_path / "payload"
     relcli.assemble(merged_dir=merged, payload_dir=payload)
 
     assert (payload / "norms_psd.npz").exists()
     assert (payload / "npz" / "metadata.json").exists()
-    assert called["dir"].endswith("npz")
+    assert (payload / "npz" / "scalp_power.npz").exists()
+    assert not (payload / "npz" / "npz").exists()   # regression guard: no double-nesting

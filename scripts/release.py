@@ -22,7 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from open_normative import release as rel
-from open_normative.io import read_norms_json, write_norms_npz
 
 # cloud_recompute is a script, not a package module — load it by path.
 # Register in sys.modules BEFORE exec so dataclass introspection (Config) works
@@ -98,13 +97,15 @@ def merge_local(src_dirs: list[Path], merged_dir: Path) -> None:
 def assemble(*, merged_dir: Path, payload_dir: Path) -> None:
     """Build the cw_payload from a merged-norms output directory.
 
-    The merge produces norms.json + norms_psd.npz but NOT the npz/ split, so we
-    regenerate the split here from norms.json via write_norms_npz.
+    build_norms --merge already writes both norms_psd.npz and the npz/ band-level
+    split into merged_dir, so we just copy them into the payload — no regeneration.
     """
     payload_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(merged_dir / "norms_psd.npz", payload_dir / "norms_psd.npz")
-    cells = read_norms_json(merged_dir / "norms.json")
-    write_norms_npz(cells, payload_dir / "npz")
+    npz_dst = payload_dir / "npz"
+    if npz_dst.exists():
+        shutil.rmtree(npz_dst)
+    shutil.copytree(merged_dir / "npz", npz_dst)
 
 
 def _git_sha() -> str:
