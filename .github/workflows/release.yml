@@ -1,0 +1,42 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  id-token: write   # AWS OIDC
+  contents: write   # create the GitHub Release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # within GitHub's 6h cap; covers the 2-dataset rebuild
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install
+        run: pip install -e '.[aws]'
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Write aws-config.yaml
+        run: printf '%s' "$AWS_CONFIG_YAML" > aws-config.yaml
+        env:
+          AWS_CONFIG_YAML: ${{ secrets.AWS_CONFIG_YAML }}
+      - name: Cut release
+        run: python scripts/release.py "${GITHUB_REF_NAME}" --publish
+      - name: GitHub Release
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" \
+            'index($0,"## ["v"]")==1{p=1;print;next} p&&/^## \[/{exit} p{print}' \
+            CHANGELOG.md > /tmp/notes.md
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/notes.md \
+            "dist/releases/${GITHUB_REF_NAME}/release.json"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

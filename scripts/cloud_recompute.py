@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -122,6 +123,18 @@ def _git_sha() -> str:
 def _make_run_id(dataset: str, channels: int) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{dataset}-{channels}ch-{stamp}"
+
+
+def _resolve_run_id(args) -> str:
+    """Use an explicit --run-id if given, else an auto timestamped id."""
+    return getattr(args, "run_id", None) or _make_run_id(args.dataset, args.channels)
+
+
+def _job_name(run_id: str, suffix: str) -> str:
+    """AWS Batch job names allow only [A-Za-z0-9_-] (<=128 chars). run_ids may
+    contain other chars — e.g. a release version like v0.2.0 has dots — so
+    sanitize for the job name while leaving run_id (the S3 prefix) untouched."""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", f"{run_id}-{suffix}")[:128]
 
 
 def _stage_openneuro_layout(ds_id: str, dest_dir: Path) -> int:
@@ -326,9 +339,25 @@ def _describe(batch, job_ids: list[str]) -> list[dict]:
 
 
 def _wait_terminal(batch, job_id: str, label: str) -> str:
+    from botocore.exceptions import BotoCoreError, ClientError
+
     last = None
+    transient_fails = 0
     while True:
-        jobs = _describe(batch, [job_id])
+        try:
+            jobs = _describe(batch, [job_id])
+            transient_fails = 0
+        except (BotoCoreError, ClientError) as exc:
+            # Transient network/DNS/throttle blip (e.g. laptop sleep or wifi drop
+            # during a long --follow). The job keeps running on AWS, so keep polling
+            # rather than killing the run; give up only after many failures in a row.
+            transient_fails += 1
+            if transient_fails > 40:
+                raise
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {label}: transient AWS error "
+                  f"({type(exc).__name__}); retry {transient_fails}...", file=sys.stderr)
+            time.sleep(15)
+            continue
         if not jobs:
             print(f"[{label}] describe_jobs empty for {job_id}; retrying...", file=sys.stderr)
             time.sleep(10)
@@ -386,7 +415,7 @@ def cmd_submit(args) -> int:
     total = len(eligible)
     slices, per_slice = _compute_slicing(total, args.slices, args.per_slice, cfg)
 
-    run_id = _make_run_id(args.dataset, args.channels)
+    run_id = _resolve_run_id(args)
     git_sha = _git_sha()
 
     parts = []
@@ -434,7 +463,7 @@ def cmd_submit(args) -> int:
     print(f"wrote {slices} slice manifest(s) to s3://{cfg.bucket}/{cfg.runs_prefix}{run_id}/slices/")
 
     array_resp = batch.submit_job(
-        jobName=f"{run_id}-array",
+        jobName=_job_name(run_id, "array"),
         jobQueue=cfg.job_queue,
         jobDefinition=cfg.array_jd,
         arrayProperties={"size": slices},
@@ -450,7 +479,7 @@ def cmd_submit(args) -> int:
     print(f"submitted array job : {array_id}")
 
     merge_resp = batch.submit_job(
-        jobName=f"{run_id}-merge",
+        jobName=_job_name(run_id, "merge"),
         jobQueue=cfg.job_queue,
         jobDefinition=cfg.merge_jd,
         dependsOn=[{"jobId": array_id, "type": "SEQUENTIAL"}],
@@ -734,6 +763,9 @@ def main() -> int:
     p_sub.add_argument("--follow", action="store_true",
                        help="Tail job status until the merge job terminates.")
     p_sub.add_argument("--dry-run", action="store_true")
+    p_sub.add_argument("--run-id", default=None,
+                       help="Explicit run id (default: <dataset>-<channels>ch-<timestamp>). "
+                            "Used by the release orchestrator for idempotent named runs.")
 
     # status
     p_st = sub.add_parser("status", help="Show job status for a run (or recent runs)")
