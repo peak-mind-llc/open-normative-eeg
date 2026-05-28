@@ -12,7 +12,7 @@ jobs:
     # Hosted ubuntu-latest (16 GB) OOMs on merge_local; self-hosted has the headroom.
     # Requires: Python >=3.10, AWS CLI v2, gh CLI. Override the labels to match
     # your fleet (e.g. [self-hosted, Linux, X64, release]).
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, ci-pool]
     timeout-minutes: 350   # within GitHub's 6h cap; covers the 2-dataset rebuild
     steps:
       - uses: actions/checkout@v4
