@@ -7,7 +7,7 @@ on:
 jobs:
   minimal:
     runs-on: [self-hosted, Linux]
-    steps: [{ run: 'echo MIN; hostname; date' }]
+    steps: [{ run: 'echo MIN-after-toggle; hostname; date' }]
   full:
     runs-on: [self-hosted, Linux, X64, ci-pool]
     steps: [{ run: 'echo FULL; hostname; date' }]
