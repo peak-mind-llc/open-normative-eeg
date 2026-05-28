@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths: ['.github/workflows/hello.yml']
 jobs:
-  hi:
-    runs-on: [self-hosted, Linux, X64]
-    steps:
-      - run: echo "hello from $(hostname) on $(date)"
+  minimal:
+    runs-on: [self-hosted, Linux]
+    steps: [{ run: 'echo MIN; hostname; date' }]
+  full:
+    runs-on: [self-hosted, Linux, X64, ci-pool]
+    steps: [{ run: 'echo FULL; hostname; date' }]
