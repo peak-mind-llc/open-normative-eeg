@@ -50,7 +50,9 @@ data "aws_iam_policy_document" "release_assume" {
 }
 
 data "aws_iam_policy_document" "release_permissions" {
-  # S3: list bucket, read runs/<id>/* (for download), write releases/<v>/* (publish).
+  # S3: list bucket, read runs/<id>/* + mirrors/* + releases/*, write to
+  # runs/<id>/* (slice manifests + submission manifests during submit) and
+  # releases/<v>/* (publish).
   statement {
     sid       = "BucketList"
     actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
@@ -70,9 +72,16 @@ data "aws_iam_policy_document" "release_permissions" {
     ]
   }
   statement {
-    sid       = "WriteReleases"
-    actions   = ["s3:PutObject", "s3:DeleteObject"]
-    resources = ["${aws_s3_bucket.runs.arn}/releases/*"]
+    sid     = "WriteRunsAndReleases"
+    actions = ["s3:PutObject", "s3:DeleteObject"]
+    resources = [
+      # runs/* needed by cloud_recompute.py submit — writes slice manifests
+      # to runs/<run_id>/slices/<i>.txt and a _submission.json. The batch
+      # job role separately writes per-subject checkpoints + merged norms
+      # at runtime; the release role only writes the manifests at submit time.
+      "${aws_s3_bucket.runs.arn}/runs/*",
+      "${aws_s3_bucket.runs.arn}/releases/*",
+    ]
   }
 
   # Batch: submit (the rebuild), describe (the --follow poll), queue checks.
