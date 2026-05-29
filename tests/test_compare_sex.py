@@ -84,3 +84,39 @@ def test_sex_invalid_raises():
     metrics = {"Fz": {"Alpha": {"absolute_power": 1.0}}}
     with pytest.raises(ValueError):
         compare_to_norms(metrics, norms, age=25, condition="ec", sex="X")
+
+
+def test_compare_and_report_passes_sex_through():
+    norms = [
+        _norm("pooled", mean=1.0, channel="Fz"),
+        _norm("F", mean=2.0, channel="Fz"),
+    ]
+    metrics = {"Fz": {"Alpha": {"absolute_power": 2.0}}}
+    report = compare_and_report(metrics, norms, age=25, condition="ec", sex="F")
+    # report.results is a list[EnrichedResult]; each wraps a base ComparisonResult
+    assert len(report.results) == 1
+    assert report.results[0].base.resolved_sex == "F"
+
+
+def test_report_metadata_has_resolved_sex_summary():
+    norms = [
+        _norm("pooled", mean=1.0, channel="Fz"),
+        _norm("F", mean=2.0, channel="Fz"),
+        _norm("pooled", mean=3.0, channel="Cz"),     # only pooled for Cz
+    ]
+    metrics = {
+        "Fz": {"Alpha": {"absolute_power": 2.0}},
+        "Cz": {"Alpha": {"absolute_power": 3.0}},
+    }
+    report = compare_and_report(metrics, norms, age=25, condition="ec", sex="F")
+    summary = report.to_dict()["metadata"]["resolved_sex_summary"]
+    assert summary == {"F": 1, "pooled": 1}
+
+
+def test_report_summary_is_empty_when_sex_is_none():
+    """sex=None means all results resolve to pooled; summary is just {'pooled': N}."""
+    norms = [_norm("pooled", mean=1.0)]
+    metrics = {"Fz": {"Alpha": {"absolute_power": 1.0}}}
+    report = compare_and_report(metrics, norms, age=25, condition="ec", sex=None)
+    summary = report.to_dict()["metadata"]["resolved_sex_summary"]
+    assert summary == {"pooled": 1}
