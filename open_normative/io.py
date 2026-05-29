@@ -307,8 +307,10 @@ def _npz_opt(x) -> Optional[float]:
 def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
     """Read NormCell objects back from a split NPZ directory.
 
-    Canonical reader for the product/consumers — handles both format_version 1
-    (no disclosure arrays) and 2. Note that NPZ never stored CI/PI, so those
+    Canonical reader for the product/consumers — handles format_version 1
+    (no disclosure arrays), 2 (disclosure arrays), and 3 (adds the `sex`
+    parallel array; missing `sex` defaults to "pooled" for back-compat).
+    Note that NPZ never stored CI/PI, so those
     fields come back as None; use norms.json for full fidelity.
 
     Args:
