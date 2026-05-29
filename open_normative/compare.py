@@ -45,6 +45,10 @@ class ComparisonResult:
             z (and its ±2/±3 cutoffs) over- or under-flag in the tails.
         z_discrepancy: |z_score - robust_z|.
         z_discrepancy_flag: True when z_discrepancy exceeds the threshold.
+        resolved_sex: Which sex variant of the normative cell was actually used
+            ("pooled", "F", or "M"). When the caller passes sex="F" but no F
+            cell exists for this tuple, compare_to_norms falls back to pooled
+            and reports resolved_sex="pooled" so the consumer can label honestly.
     """
 
     channel: str
@@ -68,6 +72,7 @@ class ComparisonResult:
     parametric_z_unreliable: bool = False
     z_discrepancy: Optional[float] = None
     z_discrepancy_flag: bool = False
+    resolved_sex: str = "pooled"     # NEW — "pooled", "F", or "M"
 
 
 def _match_bin(age: int | float, bin_label: str) -> bool:
@@ -307,6 +312,7 @@ def compare_to_norms(
                         parametric_z_unreliable=parametric_unreliable,
                         z_discrepancy=z_discrepancy,
                         z_discrepancy_flag=z_discrepancy_flag,
+                        resolved_sex=getattr(cell, "sex", "pooled"),
                     )
                 )
 
