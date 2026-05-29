@@ -49,6 +49,13 @@ _OPENNEURO_DATASETS = {
     "depress":  "ds003478",
 }
 
+# Datasets that live in OUR S3 mirror (s3://<bucket>/<mirrors_prefix><name>/),
+# not on a public bucket. Same staging trick as OpenNeuro — download metadata
+# files real, stub EEG files — but reads from the authenticated session
+# pointed at our own bucket. Lets CI/release runners enumerate slices without
+# any local data on disk.
+_S3_MIRROR_DATASETS = {"lemon"}
+
 
 # ─── Config ──────────────────────────────────────────────────────────────
 
@@ -181,6 +188,58 @@ def _stage_openneuro_layout(ds_id: str, dest_dir: Path) -> int:
             target.touch()
             n += 1
     return n
+
+
+def _stage_s3_mirror_layout(
+    session, bucket: str, key_prefix: str, dest_dir: Path,
+) -> int:
+    """Materialize a stub layout from our own S3 mirror at <bucket>/<key_prefix>.
+
+    Counterpart to _stage_openneuro_layout for datasets that live in our own
+    bucket (LEMON today). Downloads every non-EEG file under the prefix with
+    real content — covers participants.tsv/.txt, META CSVs, dataset metadata
+    JSONs, etc. — without hardcoding their names. Creates empty placeholder
+    files for every EEG file at the same relative path. The loader's
+    iter_subject_files() needs only filenames + the metadata files to compute
+    slice manifests, so the empty stubs are sufficient for submit-time work.
+    The actual EEG content is streamed to the Batch containers from the same
+    S3 prefix at run time via DATA_MIRROR.
+
+    Args:
+        session: boto3 Session (authenticated for our bucket).
+        bucket: S3 bucket holding the mirror.
+        key_prefix: prefix into the bucket, e.g. "mirrors/lemon/".
+        dest_dir: temp directory to materialize into.
+
+    Returns:
+        Number of stub EEG files created.
+    """
+    s3 = session.client("s3")
+    eeg_exts = (".edf", ".set", ".vhdr", ".eeg", ".vmrk", ".bdf", ".fif")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    n_eeg = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    prefix = key_prefix if key_prefix.endswith("/") else key_prefix + "/"
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # explicit directory marker
+            rel = key[len(prefix):]
+            if not rel:
+                continue
+            target = dest_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if key.lower().endswith(eeg_exts):
+                target.touch()
+                n_eeg += 1
+            else:
+                # Real download — covers participants.tsv/.txt, META CSVs,
+                # dataset_description.json, and anything else small the loader
+                # might consult.
+                s3.download_file(bucket, key, str(target))
+    return n_eeg
 
 
 def _enumerate_eligible_subjects(
@@ -382,11 +441,14 @@ def cmd_submit(args) -> int:
     cfg = _load_config(args.config)
     _region_safety_warning(cfg, args.dataset, args.confirm_cross_region)
 
-    # Resolve where to enumerate subjects from. Three paths:
+    # Resolve where to enumerate subjects from. Four paths:
     #  (A) --data-dir explicit  → use it (legacy local-mirror workflow).
     #  (B) OpenNeuro dataset, no --data-dir → stage a stub BIDS layout from
     #      s3://openneuro.org/<ds_id>/ in a temp dir (zero local data needed).
-    #  (C) Non-OpenNeuro (LEMON), no --data-dir → fall back to ~/Data/EEG/<DS>/.
+    #  (C) Our S3 mirror dataset (LEMON), no --data-dir → stage a stub layout
+    #      from s3://<cfg.bucket>/<cfg.mirrors_prefix><name>/ — same trick as
+    #      (B) but against our authenticated bucket.
+    #  (D) Anything else, no --data-dir → fall back to ~/Data/EEG/<DS>/.
     _stage_ctx = None  # holds the TemporaryDirectory until function returns
     if args.data_dir is not None:
         data_dir = args.data_dir
@@ -398,6 +460,18 @@ def cmd_submit(args) -> int:
         print(
             f"staged {n_stubs} EEG path stubs from s3://openneuro.org/{ds_id}/ "
             f"(no local data download needed)",
+            file=sys.stderr,
+        )
+    elif args.dataset in _S3_MIRROR_DATASETS:
+        key_prefix = f"{cfg.mirrors_prefix}{args.dataset}/"
+        _stage_ctx = tempfile.TemporaryDirectory(prefix=f"open-norm-{args.dataset}-")
+        data_dir = Path(_stage_ctx.name)
+        n_stubs = _stage_s3_mirror_layout(
+            _session(cfg), cfg.bucket, key_prefix, data_dir,
+        )
+        print(
+            f"staged {n_stubs} EEG path stubs from "
+            f"s3://{cfg.bucket}/{key_prefix} (no local data download needed)",
             file=sys.stderr,
         )
     else:
