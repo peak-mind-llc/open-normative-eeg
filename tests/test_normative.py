@@ -317,11 +317,11 @@ def test_npz_includes_disclosure_fields_and_v2(tmp_path):
     norms = _norms_for_io()
     write_norms_npz(norms, tmp_path)
     meta = json.loads((tmp_path / "npz" / "metadata.json").read_text())
-    assert meta["format_version"] == 2
+    assert meta["format_version"] == 3
     cat = next(iter(meta["categories"]))
     data = np.load(tmp_path / "npz" / f"{cat}.npz", allow_pickle=False)
     for key in ["skewness", "kurtosis", "normality_p",
-                "transform_normalized", "percentile_points", "percentiles"]:
+                "transform_normalized", "percentile_points", "percentiles", "sex"]:
         assert key in data.files
     assert data["percentiles"].shape[0] == data["mean"].shape[0]
     assert data["percentiles"].shape[1] == len(data["percentile_points"])

@@ -195,6 +195,7 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
         channels = np.array([c.channel for c in cat_cells], dtype="U80")
         bands = np.array([c.band for c in cat_cells], dtype="U64")
         metrics = np.array([c.metric for c in cat_cells], dtype="U40")
+        sexes = np.array([c.sex for c in cat_cells], dtype="U10")
         means = np.array([c.mean for c in cat_cells], dtype=np.float64)
         sds = np.array([c.sd for c in cat_cells], dtype=np.float64)
         ns = np.array([c.n for c in cat_cells], dtype=np.int32)
@@ -249,6 +250,7 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             channels=channels,
             bands=bands,
             metrics=metrics,
+            sex=sexes,
             mean=means,
             sd=sds,
             n=ns,
@@ -269,12 +271,13 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             "unique_channels": int(len(set(channels))),
             "unique_bands": sorted(set(bands.tolist())),
             "unique_metrics": sorted(set(metrics.tolist())),
+            "unique_sexes": sorted(set(sexes.tolist())),
             "size_bytes": out_path.stat().st_size,
         }
 
     # Write metadata index
     meta = {
-        "format_version": 2,
+        "format_version": 3,
         "total_cells": len(cells),
         "categories": file_manifest,
         "age_bins": sorted(set(c.bin for c in cells)),
@@ -331,6 +334,8 @@ def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
         bands = d["bands"]; metrics = d["metrics"]; ns = d["n"]
         means = d["mean"]; sds = d["sd"]
         log_means = d["log_mean"]; log_sds = d["log_sd"]; log_tf = d["log_transformed"]
+        # Back-compat: v2 NPZs have no 'sex' array. Default every cell to 'pooled'.
+        sexes = d["sex"] if "sex" in d.files else None
         has_disclosure = "skewness" in d.files
         points = d["percentile_points"] if "percentile_points" in d.files else None
         pct_matrix = d["percentiles"] if "percentiles" in d.files else None
@@ -370,6 +375,7 @@ def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
                 skewness=_npz_opt(skew[i]) if has_disclosure else None,
                 kurtosis=_npz_opt(kurt[i]) if has_disclosure else None,
                 transform_normalized=transform_normalized,
+                sex=str(sexes[i]) if sexes is not None else "pooled",
             ))
     return cells
 
