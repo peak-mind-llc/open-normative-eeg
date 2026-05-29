@@ -114,6 +114,10 @@ class NormCell:
         transform_normalized: Whether the scoring space passes the Shapiro test
             (normality_p >= alpha) — i.e. whether the transform actually
             achieved approximate Gaussianity (None if n < 3).
+        sex: Sex variant of the cell — "pooled" (all subjects), "F", or "M".
+            Each (bin, condition, channel, band, metric) tuple normally has up
+            to three cells, one per sex variant; legacy bundles default to
+            "pooled".
     """
 
     bin: str
@@ -272,7 +276,12 @@ def build_normative(
             found in subjects.
 
     Returns:
-        List of NormCell objects, one per (bin, condition, channel, band, metric).
+        List of NormCell objects, one per (bin, sex, condition, channel, band,
+        metric) — each subject's value contributes to a "pooled" cell always,
+        plus a sex-specific cell ("F" or "M") when the subject's sex
+        normalizes to one of those values. Subjects with empty / "Other" /
+        unrecognised sex contribute only to pooled, so cells with sex in
+        {"F", "M"} may be missing for some tuples.
     """
     if age_bins is None:
         age_bins = _DEFAULT_AGE_BINS
