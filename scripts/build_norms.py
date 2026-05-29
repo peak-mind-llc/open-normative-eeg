@@ -331,16 +331,15 @@ _PSD_SEX_ORDER = ["pooled", "F", "M"]
 _PSD_N_SEX = len(_PSD_SEX_ORDER)
 
 
-def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
-                        age_bins: list, output_path: Path, logger):
+def _compute_psd_slab(psd_dir: Path, subjects_for_norms: list,
+                      age_bins: list, logger) -> dict | None:
     """Aggregate per-subject PSD curves into normative PSD statistics.
 
-    For each (age_bin, condition, sex, channel), computes mean and SD of
-    log10(PSD) across subjects. The sex axis has 3 slots: pooled, F, M.
-    Each subject contributes to the "pooled" bucket plus their own sex bucket
-    if sex normalises to "F" or "M". Saves the slab at output_path.
+    Returns a dict of arrays suitable for ``np.savez_compressed``, or ``None``
+    if there are no valid PSD checkpoints to aggregate (preserving the
+    early-return behaviour of the previous monolithic function).
 
-    The output contains:
+    The dict contains:
         freqs: (n_freqs,) frequency vector
         bins: list of bin labels (e.g., "20-29")
         conditions: list of conditions
@@ -370,7 +369,7 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
     psd_files = sorted(psd_dir.glob("*_psd.npz"))
     if not psd_files:
         logger.warning("No PSD checkpoints found — skipping normative PSD build.")
-        return
+        return None
 
     logger.info(f"Building normative PSD from {len(psd_files)} PSD checkpoints...")
 
@@ -449,7 +448,7 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
 
     if not grouped or ref_freqs is None:
         logger.warning("No valid PSD data to aggregate.")
-        return
+        return None
 
     # Get canonical channel list from first entry
     # Use only the "pooled" keys to determine conditions/channels, since pooled
@@ -522,24 +521,51 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
                         except Exception:
                             pass  # leave NaN
 
-    np.savez_compressed(
-        output_path,
-        freqs=ref_freqs,
-        bins=np.array(bin_labels),
-        conditions=np.array(all_conditions),
-        sexes=np.array(_PSD_SEX_ORDER, dtype="U10"),
-        ch_names=np.array(all_ch_names),
-        mean=mean_arr,
-        sd=sd_arr,
-        n=n_arr,
-        percentile_points=np.array(_PERCENTILE_POINTS, dtype=np.float64),
-        percentiles=pct_arr,
-        normality_p=normality_arr,
-        psd_format_version=3,
-    )
-    logger.info(f"Saved normative PSD to {output_path}")
     logger.info(f"  Shape: {n_bins} bins × {n_conds} conditions × {n_sex} sexes × {n_chs} channels × {n_freqs} freqs")
     logger.info(f"  Subjects per (bin, cond, sex): {n_arr.tolist()}")
+
+    return {
+        "freqs": ref_freqs,
+        "bins": np.array(bin_labels),
+        "conditions": np.array(all_conditions),
+        "sexes": np.array(_PSD_SEX_ORDER, dtype="U10"),
+        "ch_names": np.array(all_ch_names),
+        "mean": mean_arr,
+        "sd": sd_arr,
+        "n": n_arr,
+        "percentile_points": np.array(_PERCENTILE_POINTS, dtype=np.float64),
+        "percentiles": pct_arr,
+        "normality_p": normality_arr,
+        "psd_format_version": 3,
+    }
+
+
+def _write_psd_slab(arrays: dict, output_path: Path) -> None:
+    """Write a PSD slab dict (from ``_compute_psd_slab``) to *output_path*.
+
+    Creates the parent directory if it does not already exist, so callers
+    don't have to worry about ordering relative to ``write_norms_npz``.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output_path, **arrays)
+    logger_name = __name__
+    import logging as _logging
+    _logging.getLogger(logger_name).debug(f"Saved normative PSD to {output_path}")
+
+
+def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
+                        age_bins: list, output_path: Path, logger):
+    """Compute and write the normative PSD slab to *output_path*.
+
+    Convenience wrapper around :func:`_compute_psd_slab` and
+    :func:`_write_psd_slab` for callers that only need a single write.
+    Returns early (no file written) when there are no valid PSD checkpoints.
+    """
+    arrays = _compute_psd_slab(psd_dir, subjects_for_norms, age_bins, logger)
+    if arrays is None:
+        return
+    _write_psd_slab(arrays, output_path)
+    logger.info(f"Saved normative PSD to {output_path}")
 
 
 def register_psd_spectrum_in_metadata(npz_dir: Path) -> None:
@@ -990,19 +1016,17 @@ def main():
                         psd_count += 1
             logger.info(f"Merged {psd_count} PSD checkpoints from {len(psd_source_dirs)} sources")
 
-            # Build aggregated normative PSD — write to legacy path (back-compat
-            # shim, one bundle cycle) and to the v3 home inside npz/.
-            norms_psd_legacy = output_dir / "norms_psd.npz"
-            norms_psd_v3 = output_dir / "npz" / "psd_spectrum.npz"
-            build_normative_psd(
-                merged_psd_dir, subjects_for_norms, args.age_bins,
-                norms_psd_legacy, logger,
+            # Build aggregated normative PSD — compute once, write to both paths.
+            # _compute_psd_slab does all the expensive work (Shapiro-Wilk etc.);
+            # _write_psd_slab is a cheap np.savez_compressed call.
+            slab = _compute_psd_slab(
+                merged_psd_dir, subjects_for_norms, args.age_bins, logger,
             )
-            build_normative_psd(
-                merged_psd_dir, subjects_for_norms, args.age_bins,
-                norms_psd_v3, logger,
-            )
-            register_psd_spectrum_in_metadata(output_dir / "npz")
+            if slab is not None:
+                _write_psd_slab(slab, output_dir / "norms_psd.npz")          # legacy shim
+                _write_psd_slab(slab, output_dir / "npz" / "psd_spectrum.npz")  # v3 home
+                logger.info(f"Saved normative PSD to {output_dir / 'norms_psd.npz'} and npz/psd_spectrum.npz")
+                register_psd_spectrum_in_metadata(output_dir / "npz")
         else:
             logger.info("No PSD checkpoints found in source directories — skipping normative PSD build.")
 
@@ -1311,20 +1335,16 @@ def main():
     for cat, count in sorted(npz_counts.items()):
         logger.info(f"  {cat}: {count} cells")
 
-    # Build normative PSD if requested — write to legacy path (back-compat
-    # shim, one bundle cycle) and to the v3 home inside npz/.
+    # Build normative PSD if requested — compute once, write to both paths.
+    # _compute_psd_slab does all the expensive work (Shapiro-Wilk etc.);
+    # _write_psd_slab is a cheap np.savez_compressed call.
     if args.save_psd and psd_dir is not None:
-        norms_psd_legacy = output_dir / "norms_psd.npz"
-        norms_psd_v3 = output_dir / "npz" / "psd_spectrum.npz"
-        build_normative_psd(
-            psd_dir, subjects_for_norms, args.age_bins,
-            norms_psd_legacy, logger,
-        )
-        build_normative_psd(
-            psd_dir, subjects_for_norms, args.age_bins,
-            norms_psd_v3, logger,
-        )
-        register_psd_spectrum_in_metadata(output_dir / "npz")
+        slab = _compute_psd_slab(psd_dir, subjects_for_norms, args.age_bins, logger)
+        if slab is not None:
+            _write_psd_slab(slab, output_dir / "norms_psd.npz")          # legacy shim
+            _write_psd_slab(slab, output_dir / "npz" / "psd_spectrum.npz")  # v3 home
+            logger.info(f"Saved normative PSD to {output_dir / 'norms_psd.npz'} and npz/psd_spectrum.npz")
+            register_psd_spectrum_in_metadata(output_dir / "npz")
 
     logger.info(f"Wrote {len(norms)} normative cells to:")
     logger.info(f"  {norms_json_path}")

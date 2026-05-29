@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 
 def _write_psd_checkpoint(path: Path, freqs, psds, ch_names):
