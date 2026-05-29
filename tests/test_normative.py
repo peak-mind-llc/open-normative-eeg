@@ -144,8 +144,9 @@ def _subjects_with_metric(values, *, metric, channel="Fz", band="Alpha",
 
 def _one_cell(subjects):
     norms = build_normative(subjects, age_bins=[20, 30])
-    assert len(norms) == 1
-    return norms[0]
+    pooled = [c for c in norms if c.sex == "pooled"]
+    assert len(pooled) == 1
+    return pooled[0]
 
 
 def test_cell_reports_raw_skewness_and_kurtosis():

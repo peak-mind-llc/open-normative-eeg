@@ -58,3 +58,78 @@ def test_normcell_legacy_json_without_sex_field_reads_as_pooled(tmp_path: Path):
     loaded = read_norms_json(path)
     assert len(loaded) == 1
     assert loaded[0].sex == "pooled"
+
+
+def _subject(subject_id, age, sex, value, condition="ec"):
+    """Tiny subject record for build_normative."""
+    return {
+        "subject_id": subject_id,
+        "age": age,
+        "sex": sex,
+        "condition": condition,
+        "metrics": {"Fz": {"Alpha": {"absolute_power": value}}},
+    }
+
+
+def test_build_normative_fans_to_three_sex_variants():
+    """Mixed-sex dataset produces a pooled cell + an F cell + an M cell per tuple."""
+    subjects = [
+        _subject("s01", 25, "F", 1.0),
+        _subject("s02", 25, "F", 1.1),
+        _subject("s03", 25, "F", 1.2),
+        _subject("s04", 25, "M", 2.0),
+        _subject("s05", 25, "M", 2.1),
+        _subject("s06", 25, "M", 2.2),
+    ]
+    cells = build_normative(subjects, age_bins=[20, 30, 100])
+    by_sex = {c.sex: c for c in cells
+              if c.bin == "20-29" and c.band == "Alpha" and c.channel == "Fz"
+              and c.metric == "absolute_power" and c.condition == "ec"}
+
+    assert set(by_sex) == {"pooled", "F", "M"}
+    assert by_sex["pooled"].n == 6
+    assert by_sex["F"].n == 3
+    assert by_sex["M"].n == 3
+    # Pooled mean is the mean of all 6 values; F mean is the mean of 3.
+    assert by_sex["pooled"].mean == pytest.approx((1.0 + 1.1 + 1.2 + 2.0 + 2.1 + 2.2) / 6)
+    assert by_sex["F"].mean == pytest.approx((1.0 + 1.1 + 1.2) / 3)
+    assert by_sex["M"].mean == pytest.approx((2.0 + 2.1 + 2.2) / 3)
+
+
+def test_build_normative_other_sex_contributes_to_pooled_only():
+    """Subjects with empty/unrecognised sex are pooled-only — no own-sex cell shipped."""
+    subjects = [
+        _subject("s01", 25, "F", 1.0),
+        _subject("s02", 25, "M", 2.0),
+        _subject("s03", 25, "", 3.0),      # unknown
+        _subject("s04", 25, "Other", 4.0),  # explicit other
+    ]
+    cells = build_normative(subjects, age_bins=[20, 30, 100])
+    by_sex = {c.sex: c for c in cells
+              if c.bin == "20-29" and c.band == "Alpha" and c.channel == "Fz"
+              and c.metric == "absolute_power" and c.condition == "ec"}
+
+    # Only pooled / F / M variants exist — no "Other" or "" cell.
+    assert set(by_sex) == {"pooled", "F", "M"}
+    # Pooled n includes all 4 subjects (including Other and unknown).
+    assert by_sex["pooled"].n == 4
+    assert by_sex["F"].n == 1
+    assert by_sex["M"].n == 1
+    # Pooled mean averages all 4 raw values.
+    assert by_sex["pooled"].mean == pytest.approx((1.0 + 2.0 + 3.0 + 4.0) / 4)
+
+
+def test_build_normative_single_sex_dataset_omits_other_sex_cell():
+    """All-F dataset: pooled and F cells ship; the M cell is genuinely absent."""
+    subjects = [
+        _subject("s01", 25, "F", 1.0),
+        _subject("s02", 25, "F", 1.1),
+    ]
+    cells = build_normative(subjects, age_bins=[20, 30, 100])
+    by_sex = {c.sex: c for c in cells
+              if c.bin == "20-29" and c.band == "Alpha" and c.channel == "Fz"
+              and c.metric == "absolute_power" and c.condition == "ec"}
+
+    assert set(by_sex) == {"pooled", "F"}
+    assert by_sex["pooled"].n == 2
+    assert by_sex["F"].n == 2
