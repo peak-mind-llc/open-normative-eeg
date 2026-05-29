@@ -133,3 +133,25 @@ def test_build_normative_single_sex_dataset_omits_other_sex_cell():
     assert set(by_sex) == {"pooled", "F"}
     assert by_sex["pooled"].n == 2
     assert by_sex["F"].n == 2
+
+
+def test_csv_writer_includes_sex_column(tmp_path: Path):
+    import csv
+    from open_normative.io import write_norms_csv
+
+    cells = [
+        NormCell(
+            bin="20-29", condition="ec", channel="Fz", band="Alpha",
+            metric="absolute_power", n=10, mean=1.0, sd=0.5,
+            log_mean=None, log_sd=None, log_transformed=False,
+            normality_p=None, percentiles={}, sex="F",
+        ),
+    ]
+    path = tmp_path / "norms.csv"
+    write_norms_csv(cells, path)
+
+    with open(path) as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert "sex" in rows[0]
+    assert rows[0]["sex"] == "F"

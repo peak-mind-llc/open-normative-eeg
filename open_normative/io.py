@@ -85,7 +85,7 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
 
     pct_cols = [f"p{p}" for p in _PERCENTILE_POINTS]
     base_fields = [
-        "bin", "condition", "channel", "band", "metric",
+        "bin", "sex", "condition", "channel", "band", "metric",
         "n", "mean", "sd", "log_mean", "log_sd", "log_transformed",
         "normality_p", "ci_lower", "ci_upper", "pi_lower", "pi_upper",
         "skewness", "kurtosis", "transform_normalized",
@@ -98,6 +98,7 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
         for cell in cells:
             row = {
                 "bin": cell.bin,
+                "sex": cell.sex,
                 "condition": cell.condition,
                 "channel": cell.channel,
                 "band": cell.band,
