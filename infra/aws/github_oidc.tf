@@ -122,7 +122,11 @@ resource "aws_iam_role" "release" {
   name               = "${var.name_prefix}-release"
   description        = "Assumed by GitHub Actions release.yml via OIDC (tag pushes only)."
   assume_role_policy = data.aws_iam_policy_document.release_assume.json
-  tags               = var.tags
+  # LEMON+Dortmund cloud rebuild + download + merge + verify + publish takes
+  # several hours; the default 1h session expires mid-poll and DescribeJobs
+  # fails with ExpiredTokenException. AWS max for IAM roles is 12h.
+  max_session_duration = 43200
+  tags                 = var.tags
 }
 
 resource "aws_iam_role_policy" "release" {
