@@ -810,6 +810,11 @@ def build_comparison_report(
     cohen_thresholds = config.get("cohen_d", {})
 
     # Build norm lookup for PI and normality_p
+    # TODO (Task 7): When compare_and_report passes sex= through, this enrichment
+    # index should key by (channel, band, metric, sex) and look up using the
+    # ComparisonResult's resolved_sex — otherwise enrichment fields (pi_lower,
+    # pi_upper, log_transformed) may come from a different sex variant than
+    # the one that scored the result.
     norm_index: dict[tuple, NormCell] = {}
     for cell in norms:
         if cell.condition == condition and _match_bin(age, cell.bin):
