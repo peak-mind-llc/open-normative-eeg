@@ -327,33 +327,44 @@ _PSD_ALPHA_UNIT_MIN = 1e-16
 _PSD_ALPHA_UNIT_MAX = 1e-7
 
 
+_PSD_SEX_ORDER = ["pooled", "F", "M"]
+_PSD_N_SEX = len(_PSD_SEX_ORDER)
+
+
 def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
                         age_bins: list, output_path: Path, logger):
     """Aggregate per-subject PSD curves into normative PSD statistics.
 
-    For each (age_bin, condition, channel), computes mean and SD of
-    log10(PSD) across subjects. Saves as norms_psd.npz.
+    For each (age_bin, condition, sex, channel), computes mean and SD of
+    log10(PSD) across subjects. The sex axis has 3 slots: pooled, F, M.
+    Each subject contributes to the "pooled" bucket plus their own sex bucket
+    if sex normalises to "F" or "M". Saves the slab at output_path.
 
     The output contains:
         freqs: (n_freqs,) frequency vector
         bins: list of bin labels (e.g., "20-29")
         conditions: list of conditions
-        ch_names: list of 19 channel names
-        mean: (n_bins, n_conditions, n_channels, n_freqs) log10 PSD mean
-        sd: (n_bins, n_conditions, n_channels, n_freqs) log10 PSD SD
-        n: (n_bins, n_conditions) subject counts
+        sexes: ["pooled", "F", "M"]
+        ch_names: list of channel names
+        mean: (n_bins, n_conditions, 3, n_channels, n_freqs) log10 PSD mean
+        sd: (n_bins, n_conditions, 3, n_channels, n_freqs) log10 PSD SD
+        n: (n_bins, n_conditions, 3) subject counts
         percentile_points: (n_points,) percentile values (mirrors _PERCENTILE_POINTS)
-        percentiles: (n_bins, n_conditions, n_channels, n_freqs, n_points) float32,
+        percentiles: (n_bins, n_conditions, 3, n_channels, n_freqs, n_points) float32,
             log10 space; NaN where n < 2
-        normality_p: (n_bins, n_conditions, n_channels, n_freqs) float32 Shapiro-Wilk
-            p of the log space; NaN where n < 3
-        psd_format_version: scalar int (2); consumers branch on its presence
+        normality_p: (n_bins, n_conditions, 3, n_channels, n_freqs) float32
+            Shapiro-Wilk p of the log space; NaN where n < 3
+        psd_format_version: scalar int (3); consumers branch on its presence
     """
-    # Build lookup: subject_id → age, condition
+    # Build lookup: subject_id → age, condition, sex
     subject_info = {}
     for s in subjects_for_norms:
         key = f"{s['subject_id']}_{s['condition']}"
-        subject_info[key] = {"age": s["age"], "condition": s["condition"]}
+        subject_info[key] = {
+            "age": s["age"],
+            "condition": s["condition"],
+            "sex": s.get("sex", ""),
+        }
 
     # Load all PSD checkpoints
     psd_files = sorted(psd_dir.glob("*_psd.npz"))
@@ -374,9 +385,10 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
                 return bin_labels[i]
         return None
 
-    # Collect PSD data grouped by (bin, condition)
-    # {(bin_label, condition): [(ch_names, log10_psds), ...]}
-    grouped = {}
+    # Collect PSD data grouped by (bin, condition, sex)
+    # {(bin_label, condition, sex): [(ch_names, log10_psds), ...]}
+    # Each subject is fanned to "pooled" + their own sex bucket (if F or M).
+    grouped: dict[tuple, list] = {}
     ref_freqs = None
     suspect_units = []  # (stem, alpha_median) for checkpoints failing the unit check
 
@@ -414,10 +426,16 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         psds_uv = np.maximum(psds_uv, 1e-30)  # avoid log(0)
         log10_psds = np.log10(psds_uv)
 
-        key = (age_bin, info["condition"])
-        if key not in grouped:
-            grouped[key] = []
-        grouped[key].append((ch_names, log10_psds))
+        # Normalise sex to "F", "M", or None (other/empty → pooled-only).
+        raw_sex = str(info.get("sex", "") or "").strip().upper()
+        subject_sex = raw_sex if raw_sex in {"F", "M"} else None
+
+        # Fan to pooled + own sex bucket.
+        for sex_slot in ("pooled", subject_sex):
+            if sex_slot is None:
+                continue
+            key = (age_bin, info["condition"], sex_slot)
+            grouped.setdefault(key, []).append((ch_names, log10_psds))
 
     if suspect_units:
         examples = ", ".join(f"{s}={v:.2e}" for s, v in suspect_units[:5])
@@ -434,47 +452,52 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         return
 
     # Get canonical channel list from first entry
+    # Use only the "pooled" keys to determine conditions/channels, since pooled
+    # always has all subjects.
     all_conditions = sorted({k[1] for k in grouped})
     all_ch_names = list(grouped[next(iter(grouped))][0][0])
     n_freqs = len(ref_freqs)
     n_bins = len(bin_labels)
     n_conds = len(all_conditions)
     n_chs = len(all_ch_names)
+    n_sex = _PSD_N_SEX
 
     # Build index maps
     cond_idx = {c: i for i, c in enumerate(all_conditions)}
     bin_idx = {b: i for i, b in enumerate(bin_labels)}
     ch_idx = {ch: i for i, ch in enumerate(all_ch_names)}
+    sex_idx = {s: i for i, s in enumerate(_PSD_SEX_ORDER)}
 
-    # Aggregate
+    # Aggregate — sex axis at index 2.
     n_points = len(_PERCENTILE_POINTS)
-    mean_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan)
-    sd_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan)
-    n_arr = np.zeros((n_bins, n_conds), dtype=int)
-    # Distribution-honest additions (psd_format_version 2): per-frequency
+    mean_arr = np.full((n_bins, n_conds, n_sex, n_chs, n_freqs), np.nan)
+    sd_arr = np.full((n_bins, n_conds, n_sex, n_chs, n_freqs), np.nan)
+    n_arr = np.zeros((n_bins, n_conds, n_sex), dtype=int)
+    # Distribution-honest additions (psd_format_version 3): per-frequency
     # percentiles + Shapiro-Wilk normality, computed from the same per-subject
-    # stack used for mean/sd. float32 keeps `percentiles` compact (~4-5 MB).
-    pct_arr = np.full((n_bins, n_conds, n_chs, n_freqs, n_points), np.nan, dtype=np.float32)
-    normality_arr = np.full((n_bins, n_conds, n_chs, n_freqs), np.nan, dtype=np.float32)
+    # stack used for mean/sd. float32 keeps `percentiles` compact.
+    pct_arr = np.full((n_bins, n_conds, n_sex, n_chs, n_freqs, n_points), np.nan, dtype=np.float32)
+    normality_arr = np.full((n_bins, n_conds, n_sex, n_chs, n_freqs), np.nan, dtype=np.float32)
 
-    for (b_label, cond), entries in grouped.items():
+    for (b_label, cond, sex), entries in grouped.items():
         bi = bin_idx.get(b_label)
         ci = cond_idx.get(cond)
-        if bi is None or ci is None:
+        si = sex_idx.get(sex)
+        if bi is None or ci is None or si is None:
             continue
 
-        n_arr[bi, ci] = len(entries)
+        n_arr[bi, ci, si] = len(entries)
 
         # Stack all subjects' PSDs, aligning by channel name
         stacked = np.full((len(entries), n_chs, n_freqs), np.nan)
-        for si, (ch_names, log_psds) in enumerate(entries):
+        for sub_i, (ch_names, log_psds) in enumerate(entries):
             for chi, ch in enumerate(ch_names):
                 target_ci = ch_idx.get(ch)
                 if target_ci is not None and chi < log_psds.shape[0]:
-                    stacked[si, target_ci, :] = log_psds[chi, :]
+                    stacked[sub_i, target_ci, :] = log_psds[chi, :]
 
-        mean_arr[bi, ci] = np.nanmean(stacked, axis=0)
-        sd_arr[bi, ci] = np.nanstd(stacked, axis=0, ddof=1)
+        mean_arr[bi, ci, si] = np.nanmean(stacked, axis=0)
+        sd_arr[bi, ci, si] = np.nanstd(stacked, axis=0, ddof=1)
 
         # Per-frequency percentiles (need >=2 subjects). Reuse the band-level
         # _PERCENTILE_POINTS; nanpercentile over the subject axis → (points,
@@ -484,7 +507,7 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 pct = np.nanpercentile(stacked, _PERCENTILE_POINTS, axis=0)
-            pct_arr[bi, ci] = np.moveaxis(pct, 0, -1).astype(np.float32)
+            pct_arr[bi, ci, si] = np.moveaxis(pct, 0, -1).astype(np.float32)
 
         # Shapiro-Wilk per (channel, freq) on the log (scoring) space, mirroring
         # the band-level normality_p. NaN if <3 valid samples or zero variance.
@@ -495,7 +518,7 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
                     col = col[~np.isnan(col)]
                     if col.size >= 3 and np.std(col, ddof=1) > 0:
                         try:
-                            normality_arr[bi, ci, chi, fi] = float(stats.shapiro(col).pvalue)
+                            normality_arr[bi, ci, si, chi, fi] = float(stats.shapiro(col).pvalue)
                         except Exception:
                             pass  # leave NaN
 
@@ -504,6 +527,7 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         freqs=ref_freqs,
         bins=np.array(bin_labels),
         conditions=np.array(all_conditions),
+        sexes=np.array(_PSD_SEX_ORDER, dtype="U10"),
         ch_names=np.array(all_ch_names),
         mean=mean_arr,
         sd=sd_arr,
@@ -511,11 +535,40 @@ def build_normative_psd(psd_dir: Path, subjects_for_norms: list,
         percentile_points=np.array(_PERCENTILE_POINTS, dtype=np.float64),
         percentiles=pct_arr,
         normality_p=normality_arr,
-        psd_format_version=2,
+        psd_format_version=3,
     )
     logger.info(f"Saved normative PSD to {output_path}")
-    logger.info(f"  Shape: {n_bins} bins × {n_conds} conditions × {n_chs} channels × {n_freqs} freqs")
-    logger.info(f"  Subjects per cell: {n_arr.tolist()}")
+    logger.info(f"  Shape: {n_bins} bins × {n_conds} conditions × {n_sex} sexes × {n_chs} channels × {n_freqs} freqs")
+    logger.info(f"  Subjects per (bin, cond, sex): {n_arr.tolist()}")
+
+
+def register_psd_spectrum_in_metadata(npz_dir: Path) -> None:
+    """Register npz/psd_spectrum.npz as a v3 slab category in metadata.json.
+
+    The slab is written separately from write_norms_npz (which only handles
+    the flat-layout categories), so we patch the metadata after the fact.
+    """
+    slab_path = npz_dir / "psd_spectrum.npz"
+    if not slab_path.exists():
+        return
+    arr = np.load(slab_path)
+    meta_path = npz_dir / "metadata.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {
+        "format_version": 3,
+        "total_cells": 0,
+        "categories": {},
+        "age_bins": [],
+        "conditions": [],
+    }
+    meta.setdefault("categories", {})["psd_spectrum"] = {
+        "file": "psd_spectrum.npz",
+        "layout": "slab",
+        "n_freqs": int(arr["mean"].shape[-1]),
+        "n_channels": int(arr["mean"].shape[-2]),
+        "unique_sexes": sorted(list(map(str, arr["sexes"]))),
+        "size_bytes": slab_path.stat().st_size,
+    }
+    meta_path.write_text(json.dumps(meta, indent=2))
 
 
 def _run_subject_subprocess(
@@ -937,12 +990,19 @@ def main():
                         psd_count += 1
             logger.info(f"Merged {psd_count} PSD checkpoints from {len(psd_source_dirs)} sources")
 
-            # Build aggregated normative PSD
-            norms_psd_path = output_dir / "norms_psd.npz"
+            # Build aggregated normative PSD — write to legacy path (back-compat
+            # shim, one bundle cycle) and to the v3 home inside npz/.
+            norms_psd_legacy = output_dir / "norms_psd.npz"
+            norms_psd_v3 = output_dir / "npz" / "psd_spectrum.npz"
             build_normative_psd(
                 merged_psd_dir, subjects_for_norms, args.age_bins,
-                norms_psd_path, logger,
+                norms_psd_legacy, logger,
             )
+            build_normative_psd(
+                merged_psd_dir, subjects_for_norms, args.age_bins,
+                norms_psd_v3, logger,
+            )
+            register_psd_spectrum_in_metadata(output_dir / "npz")
         else:
             logger.info("No PSD checkpoints found in source directories — skipping normative PSD build.")
 
@@ -1251,13 +1311,20 @@ def main():
     for cat, count in sorted(npz_counts.items()):
         logger.info(f"  {cat}: {count} cells")
 
-    # Build normative PSD if requested
+    # Build normative PSD if requested — write to legacy path (back-compat
+    # shim, one bundle cycle) and to the v3 home inside npz/.
     if args.save_psd and psd_dir is not None:
-        norms_psd_path = output_dir / "norms_psd.npz"
+        norms_psd_legacy = output_dir / "norms_psd.npz"
+        norms_psd_v3 = output_dir / "npz" / "psd_spectrum.npz"
         build_normative_psd(
             psd_dir, subjects_for_norms, args.age_bins,
-            norms_psd_path, logger,
+            norms_psd_legacy, logger,
         )
+        build_normative_psd(
+            psd_dir, subjects_for_norms, args.age_bins,
+            norms_psd_v3, logger,
+        )
+        register_psd_spectrum_in_metadata(output_dir / "npz")
 
     logger.info(f"Wrote {len(norms)} normative cells to:")
     logger.info(f"  {norms_json_path}")
