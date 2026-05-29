@@ -136,6 +136,11 @@ class NormCell:
     skewness: Optional[float] = None
     kurtosis: Optional[float] = None
     transform_normalized: Optional[bool] = None
+    # NOTE: `sex` is conceptually a key field (alongside bin/condition/channel/band/
+    # metric) but Python dataclass rules require defaulted fields after non-defaulted
+    # ones, so it lives at the end. Lookups and serialization go by name, so the
+    # position is cosmetic only. Legal values: "pooled", "F", "M".
+    sex: str = "pooled"
 
 
 def _compute_cell(

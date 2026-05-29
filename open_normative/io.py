@@ -59,6 +59,7 @@ def read_norms_json(filepath: PathLike) -> list[NormCell]:
         item.setdefault("ci_upper", None)
         item.setdefault("pi_lower", None)
         item.setdefault("pi_upper", None)
+        item.setdefault("sex", "pooled")  # added 2026-05; older bundles are pooled-only
         cells.append(NormCell(**item))
     return cells
 
