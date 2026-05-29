@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are [
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-29
+
 ### Added
 - `NormCell.sex` field (legal values: "pooled", "F", "M") for sex-stratified
   comparisons. `build_normative()` now fans each subject into a pooled cell
