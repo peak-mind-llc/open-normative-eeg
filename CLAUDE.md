@@ -139,11 +139,12 @@ output_dir/
     graph_metrics.npz     — global efficiency, char path length (~6 KB)
 ```
 
-### NPZ Format (`format_version: 2`)
+### NPZ Format (`format_version: 3`)
 
 Each `.npz` file contains parallel arrays aligned by index:
 - `bins`: age bin labels (U20)
 - `conditions`: "ec" or "eo" (U10)
+- `sex`: sex variant of the cell — `"pooled"`, `"F"`, or `"M"` (U10). Older v2 bundles without this array default to `"pooled"` on read.
 - `channels`: channel/pair name (U80)
 - `bands`: band name (U64 — fits ratio names like `(Delta+Theta)/(Alpha+Beta)`)
 - `metrics`: metric name (U40)

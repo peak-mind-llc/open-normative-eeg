@@ -45,6 +45,10 @@ class ComparisonResult:
             z (and its ±2/±3 cutoffs) over- or under-flag in the tails.
         z_discrepancy: |z_score - robust_z|.
         z_discrepancy_flag: True when z_discrepancy exceeds the threshold.
+        resolved_sex: Which sex variant of the normative cell was actually used
+            ("pooled", "F", or "M"). When the caller passes sex="F" but no F
+            cell exists for this tuple, compare_to_norms falls back to pooled
+            and reports resolved_sex="pooled" so the consumer can label honestly.
     """
 
     channel: str
@@ -68,6 +72,7 @@ class ComparisonResult:
     parametric_z_unreliable: bool = False
     z_discrepancy: Optional[float] = None
     z_discrepancy_flag: bool = False
+    resolved_sex: str = "pooled"     # NEW — "pooled", "F", or "M"
 
 
 def _match_bin(age: int | float, bin_label: str) -> bool:
@@ -192,6 +197,7 @@ def compare_to_norms(
     apply_fdr: bool = True,
     fdr_alpha: float = 0.05,
     robust_config: Optional[dict] = None,
+    sex: Optional[str] = None,        # NEW
 ) -> list[ComparisonResult]:
     """Compare clinical metrics against a normative database.
 
@@ -219,23 +225,34 @@ def compare_to_norms(
     discrepancy_threshold = robust_config.get("discrepancy_threshold", 1.0)
     tail_min_n = robust_config.get("tail_percentile_min_n", 200)
 
-    # Index norms by (bin, condition, channel, band, metric) for fast lookup.
+    if sex is not None and sex not in ("F", "M"):
+        raise ValueError(f"sex must be None, 'F', or 'M' (got {sex!r})")
+    target_sex = sex if sex is not None else "pooled"
+
+    # Index norms by (channel, band, metric, sex) → cell. For each tuple we
+    # also keep a pooled fallback so that when sex='F'/'M' is requested but
+    # the variant is absent, we can resolve to pooled per-metric.
     norm_index: dict[tuple, NormCell] = {}
+    pooled_index: dict[tuple, NormCell] = {}
     for cell in norms:
-        if cell.condition == condition and _match_bin(age, cell.bin):
-            key = (cell.channel, cell.band, cell.metric)
-            # If multiple bins match (shouldn't happen normally), prefer the
-            # one with more subjects.
-            if key not in norm_index or cell.n > norm_index[key].n:
-                norm_index[key] = cell
+        if cell.condition != condition or not _match_bin(age, cell.bin):
+            continue
+        tup = (cell.channel, cell.band, cell.metric)
+        if cell.sex == "pooled":
+            if tup not in pooled_index or cell.n > pooled_index[tup].n:
+                pooled_index[tup] = cell
+        key = (cell.channel, cell.band, cell.metric, cell.sex)
+        if key not in norm_index or cell.n > norm_index[key].n:
+            norm_index[key] = cell
 
     results: list[ComparisonResult] = []
 
     for channel, band_dict in metrics.items():
         for band, metric_dict in band_dict.items():
             for metric_name, value in metric_dict.items():
-                key = (channel, band, metric_name)
-                cell = norm_index.get(key)
+                cell = norm_index.get((channel, band, metric_name, target_sex))
+                if cell is None and target_sex != "pooled":
+                    cell = pooled_index.get((channel, band, metric_name))
                 if cell is None:
                     continue
 
@@ -307,6 +324,7 @@ def compare_to_norms(
                         parametric_z_unreliable=parametric_unreliable,
                         z_discrepancy=z_discrepancy,
                         z_discrepancy_flag=z_discrepancy_flag,
+                        resolved_sex=getattr(cell, "sex", "pooled"),
                     )
                 )
 
@@ -637,6 +655,7 @@ class ComparisonReport:
                 "expected_false_positives_uncorrected": round(
                     self.expected_false_positives_uncorrected, 1
                 ),
+                "resolved_sex_summary": self._sex_summary(),
             },
             "results": [
                 {
@@ -686,6 +705,14 @@ class ComparisonReport:
                 "metric_disagreements": self.metric_disagreements,
             },
         }
+
+    def _sex_summary(self) -> dict:
+        """Count how many results resolved to each sex variant."""
+        summary: dict[str, int] = {}
+        for er in self.results:
+            key = er.base.resolved_sex
+            summary[key] = summary.get(key, 0) + 1
+        return summary
 
     def summary_text(self) -> str:
         """Plain-text clinical summary."""
@@ -791,11 +818,13 @@ def build_comparison_report(
     ])
     cohen_thresholds = config.get("cohen_d", {})
 
-    # Build norm lookup for PI and normality_p
+    # Build norm lookup for PI and normality_p.
+    # Keyed by (channel, band, metric, sex) so enrichment fields come from the
+    # same sex variant that scored each result.  n-tiebreak retained.
     norm_index: dict[tuple, NormCell] = {}
     for cell in norms:
         if cell.condition == condition and _match_bin(age, cell.bin):
-            key = (cell.channel, cell.band, cell.metric)
+            key = (cell.channel, cell.band, cell.metric, cell.sex)
             if key not in norm_index or cell.n > norm_index[key].n:
                 norm_index[key] = cell
 
@@ -805,7 +834,10 @@ def build_comparison_report(
     # Enrich each result
     enriched: list[EnrichedResult] = []
     for r in results:
-        cell = norm_index.get((r.channel, r.band, r.metric))
+        # Look up using resolved_sex first; fall back to pooled per-tuple.
+        cell = norm_index.get((r.channel, r.band, r.metric, r.resolved_sex))
+        if cell is None and r.resolved_sex != "pooled":
+            cell = norm_index.get((r.channel, r.band, r.metric, "pooled"))
 
         se_z = compute_se_z(r.z_score, r.norm_n) if r.z_score is not None else None
         d = compute_cohen_d(r.value, r.norm_mean, r.norm_sd)
@@ -892,6 +924,7 @@ def compare_and_report(
     condition: str,
     config: Optional[dict] = None,
     fdr_alpha: float = 0.05,
+    sex: Optional[str] = None,
 ) -> ComparisonReport:
     """Convenience: compare_to_norms() + build_comparison_report() in one call.
 
@@ -902,6 +935,7 @@ def compare_and_report(
         condition: Recording condition.
         config: Report config dict. Defaults to REPORT_PARAMS.
         fdr_alpha: FDR significance level.
+        sex: Optional sex filter — "F", "M", or None (pooled).
 
     Returns:
         ComparisonReport with full statistical transparency.
@@ -909,6 +943,7 @@ def compare_and_report(
     results = compare_to_norms(
         metrics, norms, age, condition,
         apply_fdr=True, fdr_alpha=fdr_alpha,
+        sex=sex,
     )
     return build_comparison_report(
         results, norms, age, condition,

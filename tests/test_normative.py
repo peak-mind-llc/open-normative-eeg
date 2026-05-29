@@ -144,8 +144,9 @@ def _subjects_with_metric(values, *, metric, channel="Fz", band="Alpha",
 
 def _one_cell(subjects):
     norms = build_normative(subjects, age_bins=[20, 30])
-    assert len(norms) == 1
-    return norms[0]
+    pooled = [c for c in norms if c.sex == "pooled"]
+    assert len(pooled) == 1
+    return pooled[0]
 
 
 def test_cell_reports_raw_skewness_and_kurtosis():
@@ -316,11 +317,11 @@ def test_npz_includes_disclosure_fields_and_v2(tmp_path):
     norms = _norms_for_io()
     write_norms_npz(norms, tmp_path)
     meta = json.loads((tmp_path / "npz" / "metadata.json").read_text())
-    assert meta["format_version"] == 2
+    assert meta["format_version"] == 3
     cat = next(iter(meta["categories"]))
     data = np.load(tmp_path / "npz" / f"{cat}.npz", allow_pickle=False)
     for key in ["skewness", "kurtosis", "normality_p",
-                "transform_normalized", "percentile_points", "percentiles"]:
+                "transform_normalized", "percentile_points", "percentiles", "sex"]:
         assert key in data.files
     assert data["percentiles"].shape[0] == data["mean"].shape[0]
     assert data["percentiles"].shape[1] == len(data["percentile_points"])

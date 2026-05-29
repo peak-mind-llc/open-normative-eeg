@@ -114,6 +114,10 @@ class NormCell:
         transform_normalized: Whether the scoring space passes the Shapiro test
             (normality_p >= alpha) — i.e. whether the transform actually
             achieved approximate Gaussianity (None if n < 3).
+        sex: Sex variant of the cell — "pooled" (all subjects), "F", or "M".
+            Each (bin, condition, channel, band, metric) tuple normally has up
+            to three cells, one per sex variant; legacy bundles default to
+            "pooled".
     """
 
     bin: str
@@ -136,6 +140,11 @@ class NormCell:
     skewness: Optional[float] = None
     kurtosis: Optional[float] = None
     transform_normalized: Optional[bool] = None
+    # NOTE: `sex` is conceptually a key field (alongside bin/condition/channel/band/
+    # metric) but Python dataclass rules require defaulted fields after non-defaulted
+    # ones, so it lives at the end. Lookups and serialization go by name, so the
+    # position is cosmetic only. Legal values: "pooled", "F", "M".
+    sex: str = "pooled"
 
 
 def _compute_cell(
@@ -145,6 +154,7 @@ def _compute_cell(
     channel: str,
     band: str,
     metric: str,
+    sex: str = "pooled",
 ) -> NormCell:
     """Compute statistics for a single norm cell from a list of values."""
     arr = np.array(values, dtype=float)
@@ -242,6 +252,7 @@ def _compute_cell(
         skewness=skewness,
         kurtosis=kurtosis,
         transform_normalized=transform_normalized,
+        sex=sex,
     )
 
 
@@ -265,7 +276,12 @@ def build_normative(
             found in subjects.
 
     Returns:
-        List of NormCell objects, one per (bin, condition, channel, band, metric).
+        List of NormCell objects, one per (bin, sex, condition, channel, band,
+        metric) — each subject's value contributes to a "pooled" cell always,
+        plus a sex-specific cell ("F" or "M") when the subject's sex
+        normalizes to one of those values. Subjects with empty / "Other" /
+        unrecognised sex contribute only to pooled, so cells with sex in
+        {"F", "M"} may be missing for some tuples.
     """
     if age_bins is None:
         age_bins = _DEFAULT_AGE_BINS
@@ -275,7 +291,10 @@ def build_normative(
     if conditions is not None:
         all_conditions = all_conditions & set(conditions)
 
-    # Accumulate values: key = (bin, condition, channel, band, metric)
+    # Accumulate values: key = (bin, sex, condition, channel, band, metric).
+    # Each subject contributes to ("pooled", ...) always, plus
+    # (subject.sex, ...) when sex is "F" or "M". Subjects with empty / "Other" /
+    # unrecognised sex contribute only to pooled — no own-sex cell ships.
     accumulator: dict[tuple, list[float]] = {}
 
     for subject in subjects:
@@ -288,6 +307,9 @@ def build_normative(
         if bin_label is None:
             continue
 
+        raw_sex = str(subject.get("sex", "") or "").strip().upper()
+        subject_sex = raw_sex if raw_sex in {"F", "M"} else None
+
         metrics = subject.get("metrics", {})
         for channel, band_dict in metrics.items():
             for band, metric_dict in band_dict.items():
@@ -296,17 +318,18 @@ def build_normative(
                         isinstance(value, float) and np.isnan(value)
                     ):
                         continue
-                    # Skip non-numeric metric values (e.g. metadata strings).
                     if not isinstance(value, (int, float)):
                         continue
-                    key = (bin_label, cond, channel, band, metric_name)
-                    if key not in accumulator:
-                        accumulator[key] = []
-                    accumulator[key].append(float(value))
+
+                    pooled_key = (bin_label, "pooled", cond, channel, band, metric_name)
+                    accumulator.setdefault(pooled_key, []).append(float(value))
+                    if subject_sex is not None:
+                        sex_key = (bin_label, subject_sex, cond, channel, band, metric_name)
+                        accumulator.setdefault(sex_key, []).append(float(value))
 
     # Build NormCell for each collected key.
     cells = []
-    for (bin_label, cond, channel, band, metric_name), values in sorted(
+    for (bin_label, sex, cond, channel, band, metric_name), values in sorted(
         accumulator.items()
     ):
         cell = _compute_cell(
@@ -316,6 +339,7 @@ def build_normative(
             channel=channel,
             band=band,
             metric=metric_name,
+            sex=sex,
         )
         cells.append(cell)
 

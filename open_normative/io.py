@@ -59,6 +59,7 @@ def read_norms_json(filepath: PathLike) -> list[NormCell]:
         item.setdefault("ci_upper", None)
         item.setdefault("pi_lower", None)
         item.setdefault("pi_upper", None)
+        item.setdefault("sex", "pooled")  # added 2026-05; older bundles are pooled-only
         cells.append(NormCell(**item))
     return cells
 
@@ -84,7 +85,7 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
 
     pct_cols = [f"p{p}" for p in _PERCENTILE_POINTS]
     base_fields = [
-        "bin", "condition", "channel", "band", "metric",
+        "bin", "sex", "condition", "channel", "band", "metric",
         "n", "mean", "sd", "log_mean", "log_sd", "log_transformed",
         "normality_p", "ci_lower", "ci_upper", "pi_lower", "pi_upper",
         "skewness", "kurtosis", "transform_normalized",
@@ -97,6 +98,7 @@ def write_norms_csv(cells: list[NormCell], filepath: PathLike) -> None:
         for cell in cells:
             row = {
                 "bin": cell.bin,
+                "sex": cell.sex,
                 "condition": cell.condition,
                 "channel": cell.channel,
                 "band": cell.band,
@@ -194,6 +196,7 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
         channels = np.array([c.channel for c in cat_cells], dtype="U80")
         bands = np.array([c.band for c in cat_cells], dtype="U64")
         metrics = np.array([c.metric for c in cat_cells], dtype="U40")
+        sexes = np.array([c.sex for c in cat_cells], dtype="U10")
         means = np.array([c.mean for c in cat_cells], dtype=np.float64)
         sds = np.array([c.sd for c in cat_cells], dtype=np.float64)
         ns = np.array([c.n for c in cat_cells], dtype=np.int32)
@@ -248,6 +251,7 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             channels=channels,
             bands=bands,
             metrics=metrics,
+            sex=sexes,
             mean=means,
             sd=sds,
             n=ns,
@@ -268,12 +272,13 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             "unique_channels": int(len(set(channels))),
             "unique_bands": sorted(set(bands.tolist())),
             "unique_metrics": sorted(set(metrics.tolist())),
+            "unique_sexes": sorted(set(sexes.tolist())),
             "size_bytes": out_path.stat().st_size,
         }
 
     # Write metadata index
     meta = {
-        "format_version": 2,
+        "format_version": 3,
         "total_cells": len(cells),
         "categories": file_manifest,
         "age_bins": sorted(set(c.bin for c in cells)),
@@ -303,8 +308,10 @@ def _npz_opt(x) -> Optional[float]:
 def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
     """Read NormCell objects back from a split NPZ directory.
 
-    Canonical reader for the product/consumers — handles both format_version 1
-    (no disclosure arrays) and 2. Note that NPZ never stored CI/PI, so those
+    Canonical reader for the product/consumers — handles format_version 1
+    (no disclosure arrays), 2 (disclosure arrays), and 3 (adds the `sex`
+    parallel array; missing `sex` defaults to "pooled" for back-compat).
+    Note that NPZ never stored CI/PI, so those
     fields come back as None; use norms.json for full fidelity.
 
     Args:
@@ -330,6 +337,8 @@ def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
         bands = d["bands"]; metrics = d["metrics"]; ns = d["n"]
         means = d["mean"]; sds = d["sd"]
         log_means = d["log_mean"]; log_sds = d["log_sd"]; log_tf = d["log_transformed"]
+        # Back-compat: v2 NPZs have no 'sex' array. Default every cell to 'pooled'.
+        sexes = d["sex"] if "sex" in d.files else None
         has_disclosure = "skewness" in d.files
         points = d["percentile_points"] if "percentile_points" in d.files else None
         pct_matrix = d["percentiles"] if "percentiles" in d.files else None
@@ -369,6 +378,7 @@ def read_norms_npz(npz_dir: PathLike) -> list[NormCell]:
                 skewness=_npz_opt(skew[i]) if has_disclosure else None,
                 kurtosis=_npz_opt(kurt[i]) if has_disclosure else None,
                 transform_normalized=transform_normalized,
+                sex=str(sexes[i]) if sexes is not None else "pooled",
             ))
     return cells
 

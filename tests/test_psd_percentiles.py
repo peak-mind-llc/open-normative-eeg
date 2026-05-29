@@ -1,4 +1,4 @@
-"""Tests for per-frequency percentiles in norms_psd.npz (psd_format_version 2)."""
+"""Tests for per-frequency percentiles in norms_psd.npz (psd_format_version 3)."""
 import importlib.util
 import logging
 from pathlib import Path
@@ -56,44 +56,51 @@ def _build(tmp_path, seed, n_full=400):
 
 def test_new_arrays_present_and_shaped(tmp_path):
     d = _build(tmp_path, 0)
-    for k in ["freqs", "bins", "conditions", "ch_names", "mean", "sd", "n",
+    for k in ["freqs", "bins", "conditions", "sexes", "ch_names", "mean", "sd", "n",
               "percentile_points", "percentiles", "normality_p", "psd_format_version"]:
         assert k in d.files, f"missing {k}"
-    assert int(d["psd_format_version"]) == 2
+    assert int(d["psd_format_version"]) == 3
     np.testing.assert_allclose(d["percentile_points"], _PCT)
-    n_bins, n_cond, n_ch, n_freq = d["mean"].shape
-    assert d["percentiles"].shape == (n_bins, n_cond, n_ch, n_freq, len(_PCT))
+    # v3 shape: (n_bins, n_cond, 3_sex, n_ch, n_freq)
+    n_bins, n_cond, n_sex, n_ch, n_freq = d["mean"].shape
+    assert n_sex == 3
+    assert list(d["sexes"]) == ["pooled", "F", "M"]
+    assert d["percentiles"].shape == (n_bins, n_cond, n_sex, n_ch, n_freq, len(_PCT))
     assert d["percentiles"].dtype == np.float32
-    assert d["normality_p"].shape == (n_bins, n_cond, n_ch, n_freq)
+    assert d["normality_p"].shape == (n_bins, n_cond, n_sex, n_ch, n_freq)
     assert d["normality_p"].dtype == np.float32
 
 
 def test_p50_matches_mean(tmp_path):
     d = _build(tmp_path, 1)
-    p50 = d["percentiles"][0, 0, :, :, _P50_IDX]
-    np.testing.assert_allclose(p50, d["mean"][0, 0], atol=0.1)
+    # Slice through pooled sex index (0); subjects in _build have no sex field → pooled only.
+    p50 = d["percentiles"][0, 0, 0, :, :, _P50_IDX]
+    np.testing.assert_allclose(p50, d["mean"][0, 0, 0], atol=0.1)
 
 
 def test_monotonic_along_points(tmp_path):
     d = _build(tmp_path, 2)
-    diffs = np.diff(d["percentiles"][0, 0], axis=-1)  # (n_ch, n_freq, 12)
+    # Slice through pooled sex index (0).
+    diffs = np.diff(d["percentiles"][0, 0, 0], axis=-1)  # (n_ch, n_freq, 12)
     assert np.all(diffs >= -1e-6)
 
 
 def test_tails_bracket_two_sigma(tmp_path):
     d = _build(tmp_path, 3)
-    mean, sd = d["mean"][0, 0], d["sd"][0, 0]
-    p2_5 = d["percentiles"][0, 0, :, :, _P2_5_IDX]
-    p97_5 = d["percentiles"][0, 0, :, :, _P97_5_IDX]
+    # Slice through pooled sex index (0).
+    mean, sd = d["mean"][0, 0, 0], d["sd"][0, 0, 0]
+    p2_5 = d["percentiles"][0, 0, 0, :, :, _P2_5_IDX]
+    p97_5 = d["percentiles"][0, 0, 0, :, :, _P97_5_IDX]
     assert np.all((p2_5 > mean - 2.5 * sd) & (p2_5 < mean - 1.4 * sd))
     assert np.all((p97_5 < mean + 2.5 * sd) & (p97_5 > mean + 1.4 * sd))
 
 
 def test_nan_where_insufficient_n(tmp_path):
     d = _build(tmp_path, 4)
-    assert int(d["n"][1, 0]) == 1                       # bin "30-39"
-    assert np.all(np.isnan(d["percentiles"][1, 0]))     # n < 2
-    assert np.all(np.isnan(d["normality_p"][1, 0]))     # n < 3
+    # n is now (n_bins, n_conds, n_sex); pooled index is 0.
+    assert int(d["n"][1, 0, 0]) == 1                        # bin "30-39", pooled
+    assert np.all(np.isnan(d["percentiles"][1, 0, 0]))      # n < 2
+    assert np.all(np.isnan(d["normality_p"][1, 0, 0]))      # n < 3
 
 
 def test_existing_arrays_unchanged(tmp_path):
@@ -101,14 +108,16 @@ def test_existing_arrays_unchanged(tmp_path):
     assert d["mean"].dtype == np.float64
     assert d["sd"].dtype == np.float64
     assert list(d["ch_names"]) == _CH
-    assert int(d["n"][0, 0]) == 400
+    # n is now (n_bins, n_conds, n_sex); pooled index is 0.
+    assert int(d["n"][0, 0, 0]) == 400
 
 
 def test_n2_bin_has_percentiles_but_no_normality(tmp_path):
     d = _build(tmp_path, 6)
-    assert int(d["n"][2, 0]) == 2                       # bin "40-49"
-    assert not np.all(np.isnan(d["percentiles"][2, 0]))  # n >= 2 → present
-    assert np.all(np.isnan(d["normality_p"][2, 0]))      # n < 3 → NaN
+    # n is now (n_bins, n_conds, n_sex); pooled index is 0.
+    assert int(d["n"][2, 0, 0]) == 2                        # bin "40-49", pooled
+    assert not np.all(np.isnan(d["percentiles"][2, 0, 0]))  # n >= 2 → present
+    assert np.all(np.isnan(d["normality_p"][2, 0, 0]))      # n < 3 → NaN
 
 
 def test_unit_guard_flags_misscaled_checkpoint(tmp_path, caplog):
