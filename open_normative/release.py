@@ -107,8 +107,8 @@ def verify_payload(payload_dir: Path) -> list[str]:
         return [f"missing {psd_path.name}"]
 
     d = np.load(psd_path, allow_pickle=False)
-    if "psd_format_version" not in d.files or int(d["psd_format_version"]) != 2:
-        problems.append("norms_psd.npz: psd_format_version missing or != 2")
+    if "psd_format_version" not in d.files or int(d["psd_format_version"]) not in (2, 3):
+        problems.append("norms_psd.npz: psd_format_version missing or not in {2, 3}")
     if "percentiles" not in d.files:
         problems.append("norms_psd.npz: missing percentiles array")
     else:

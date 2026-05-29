@@ -5,6 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are [
 
 ## [Unreleased]
 
+### Added
+- `NormCell.sex` field (legal values: "pooled", "F", "M") for sex-stratified
+  comparisons. `build_normative()` now fans each subject into a pooled cell
+  plus an own-sex cell when sex is F or M.
+- `compare_to_norms()` and `compare_and_report()` accept an optional `sex=`
+  kwarg with per-metric pooled fallback. Results carry `resolved_sex`; the
+  report metadata exposes `resolved_sex_summary`.
+- New `npz/psd_spectrum.npz` slab category — frequency-resolved normative
+  spectrum, sex-stratified (axis at index 2). Registered in `metadata.json`
+  with `"layout": "slab"`.
+- `PROVENANCE.md` is now generated at build time with a cohort sex breakdown
+  table and PSD freq-resolved category note.
+
+### Changed
+- NPZ bundle `format_version` bumped from 2 to 3. Every category gains a
+  `sex` parallel array. Older `open_normative` versions reading a v3 bundle
+  will silently triple-count cells — consumers must upgrade.
+- Legacy root-level `norms_psd.npz` is still written for one bundle cycle
+  as a back-compat shim; will be removed in the next regeneration.
+
 ## [0.2.0] - 2026-05-26
 ### Added
 - Per-frequency percentiles in `norms_psd.npz` (`psd_format_version: 2`).

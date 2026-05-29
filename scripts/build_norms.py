@@ -399,6 +399,10 @@ queries. Per-frequency normative spectra live at `npz/psd_spectrum.npz`
 (slab layout — sex-stratified at index 2, see file's `sexes` array for the
 axis order). The legacy root-level `norms_psd.npz` is a back-compat shim
 and will be removed in the next bundle regeneration.
+**Requires open_normative ≥ 0.3.0** (the version introducing
+format_version 3). Older library versions reading a v3 bundle will
+silently triple-count cells because they index without the sex axis —
+upgrade before consuming.
 
 ## Cohort sex breakdown
 

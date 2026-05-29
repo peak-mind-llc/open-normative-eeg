@@ -28,3 +28,4 @@ def test_provenance_writer_basic(tmp_path: Path):
     assert "20-29" in md
     assert "30-39" in md
     assert "40-49" in md
+    assert "Requires open_normative" in md

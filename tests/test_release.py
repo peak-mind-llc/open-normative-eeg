@@ -121,6 +121,37 @@ def test_verify_passes_clean_payload(tmp_path):
     assert rel.verify_payload(payload) == []
 
 
+def _write_norms_psd_v3(path, *, p97_5=2.0, p50_offset=0.0):
+    """Write a minimal v3 norms_psd.npz with a 5D slab (bins, conds, sex, channels, freqs)."""
+    n_bins, n_cond, n_sex, n_ch, n_freq, n_pts = 1, 1, 3, 2, 3, 13
+    points = [0.5, 1, 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5, 99, 99.5]
+    mean = np.full((n_bins, n_cond, n_sex, n_ch, n_freq), 0.5)
+    pct = np.zeros((n_bins, n_cond, n_sex, n_ch, n_freq, n_pts))
+    for k in range(n_pts):
+        pct[..., k] = -1.0 + (p97_5 + 1.0) * (k / (n_pts - 1))
+    pct[..., 6] = mean + p50_offset
+    pct.sort(axis=-1)  # guarantee monotonic
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        mean=mean,
+        sd=np.full_like(mean, 0.3),
+        percentiles=pct.astype(np.float32),
+        percentile_points=np.array(points),
+        n=np.full((n_bins, n_cond, n_sex), 100),
+        psd_format_version=3,
+        sexes=np.array(["pooled", "F", "M"]),
+    )
+
+
+def test_verify_passes_v3_clean_payload(tmp_path):
+    payload = tmp_path / "p"
+    _write_norms_psd_v3(payload / "norms_psd.npz", p97_5=2.0)
+    (payload / "npz").mkdir(parents=True, exist_ok=True)
+    (payload / "npz" / "metadata.json").write_text('{"format_version": 3}')
+    assert rel.verify_payload(payload) == []
+
+
 def test_verify_flags_missing_version(tmp_path):
     payload = tmp_path / "p"
     _write_norms_psd(payload / "norms_psd.npz", version=None, p97_5=2.0)
