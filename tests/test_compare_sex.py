@@ -113,7 +113,7 @@ def test_report_metadata_has_resolved_sex_summary():
     assert summary == {"F": 1, "pooled": 1}
 
 
-def test_report_summary_is_empty_when_sex_is_none():
+def test_report_summary_shows_pooled_when_sex_is_none():
     """sex=None means all results resolve to pooled; summary is just {'pooled': N}."""
     norms = [_norm("pooled", mean=1.0)]
     metrics = {"Fz": {"Alpha": {"absolute_power": 1.0}}}
