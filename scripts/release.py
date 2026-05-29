@@ -171,7 +171,7 @@ def main(argv=None) -> int:
         merge_run_id="local",   # cross-dataset merge runs locally, not in the cloud
         # image tag matches publish-image.yml (docker metadata-action: 7-char short sha)
         code={"git_sha": sha, "git_tag": f"v{v}", "image": f"{IMAGE_REPO}:{sha[:7]}"},
-        format_versions={"norms_npz": 2, "psd": 2},
+        format_versions={"norms_npz": 3, "psd": 3},
         s3_base=f"s3://{cfg.bucket}/releases/v{v}/",
         builder=builder,
         ci_run_url=ci_run_url,
