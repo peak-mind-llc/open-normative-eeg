@@ -57,11 +57,16 @@ data "aws_iam_policy_document" "release_permissions" {
     resources = [aws_s3_bucket.runs.arn]
   }
   statement {
-    sid     = "ReadRunsAndReleases"
+    sid     = "ReadRunsReleasesMirrors"
     actions = ["s3:GetObject"]
     resources = [
       "${aws_s3_bucket.runs.arn}/runs/*",
       "${aws_s3_bucket.runs.arn}/releases/*",
+      # mirrors/ needed by cloud_recompute.py's _stage_s3_mirror_layout so the
+      # release workflow can enumerate LEMON subjects from our S3 mirror
+      # without any local data on the runner. Read-only here; mirrors are
+      # populated out of band by operators.
+      "${aws_s3_bucket.runs.arn}/mirrors/*",
     ]
   }
   statement {
