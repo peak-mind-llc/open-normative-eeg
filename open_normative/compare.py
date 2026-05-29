@@ -197,6 +197,7 @@ def compare_to_norms(
     apply_fdr: bool = True,
     fdr_alpha: float = 0.05,
     robust_config: Optional[dict] = None,
+    sex: Optional[str] = None,        # NEW
 ) -> list[ComparisonResult]:
     """Compare clinical metrics against a normative database.
 
@@ -224,23 +225,34 @@ def compare_to_norms(
     discrepancy_threshold = robust_config.get("discrepancy_threshold", 1.0)
     tail_min_n = robust_config.get("tail_percentile_min_n", 200)
 
-    # Index norms by (bin, condition, channel, band, metric) for fast lookup.
+    if sex is not None and sex not in ("F", "M"):
+        raise ValueError(f"sex must be None, 'F', or 'M' (got {sex!r})")
+    target_sex = sex if sex is not None else "pooled"
+
+    # Index norms by (channel, band, metric, sex) → cell. For each tuple we
+    # also keep a pooled fallback so that when sex='F'/'M' is requested but
+    # the variant is absent, we can resolve to pooled per-metric.
     norm_index: dict[tuple, NormCell] = {}
+    pooled_index: dict[tuple, NormCell] = {}
     for cell in norms:
-        if cell.condition == condition and _match_bin(age, cell.bin):
-            key = (cell.channel, cell.band, cell.metric)
-            # If multiple bins match (shouldn't happen normally), prefer the
-            # one with more subjects.
-            if key not in norm_index or cell.n > norm_index[key].n:
-                norm_index[key] = cell
+        if cell.condition != condition or not _match_bin(age, cell.bin):
+            continue
+        tup = (cell.channel, cell.band, cell.metric)
+        if cell.sex == "pooled":
+            if tup not in pooled_index or cell.n > pooled_index[tup].n:
+                pooled_index[tup] = cell
+        key = (cell.channel, cell.band, cell.metric, cell.sex)
+        if key not in norm_index or cell.n > norm_index[key].n:
+            norm_index[key] = cell
 
     results: list[ComparisonResult] = []
 
     for channel, band_dict in metrics.items():
         for band, metric_dict in band_dict.items():
             for metric_name, value in metric_dict.items():
-                key = (channel, band, metric_name)
-                cell = norm_index.get(key)
+                cell = norm_index.get((channel, band, metric_name, target_sex))
+                if cell is None and target_sex != "pooled":
+                    cell = pooled_index.get((channel, band, metric_name))
                 if cell is None:
                     continue
 
