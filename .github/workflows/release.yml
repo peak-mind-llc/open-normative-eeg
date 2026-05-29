@@ -26,6 +26,10 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
           aws-region: us-east-1
+          # Default 1h was expiring mid-poll while cmd_submit --follow waited
+          # for the LEMON Batch array to finish. Match the IAM role's
+          # max_session_duration so the credentials outlive the rebuild.
+          role-duration-seconds: 43200
       - name: Write aws-config.yaml
         run: printf '%s' "$AWS_CONFIG_YAML" > aws-config.yaml
         env:
