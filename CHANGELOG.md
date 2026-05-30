@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are [
 
 ## [Unreleased]
 
+### Added
+- New `npz/scalp_node_strength.npz` category. Per-electrode node-strength
+  cells (formerly mixed into `scalp_power.npz` under metric names
+  `dwpli_node_strength` / `coh_node_strength`) now live in their own file
+  with metric names `dwpli` / `coh`, matching `scalp_connectivity.npz`
+  convention.
+- `npz/metadata.json` publishes `roi_order` and `roi_labels` when source
+  ROI connectivity cells are present, and `ba_order` when BA connectivity
+  cells are present. Consumers should construct `_src_conn_{A}_{B}` keys
+  with A preceding B in `roi_order` rather than calling `sorted()`.
+
+### Changed
+- `scalp_power.npz` no longer contains node-strength rows (moved to
+  `scalp_node_strength.npz`). Consumers reading `dwpli_node_strength` /
+  `coh_node_strength` from `scalp_power.npz` will see no such metric;
+  switch the lookup to `scalp_node_strength.npz` with metric `dwpli` /
+  `coh`.
+
 ## [0.3.0] - 2026-05-29
 
 ### Added
