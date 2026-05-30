@@ -1,0 +1,100 @@
+name: Norms bundle issue
+description: Something is wrong with the content, schema, or completeness of a shipped norms bundle (missing category, drift between v1/v2, wrong z-scores, etc.).
+title: "bundle: "
+labels: ["bundle"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template when the problem is with what a **published norms bundle ships** — not when the build pipeline has a bug producing it. Examples: "v2 bundle has no freq-resolved category", "schema drift between npz/metadata.json and the actual category files", "z-scores look off for sex=F on bin 30-39".
+
+        For "the build script crashes" or "compare_to_norms throws", use the standard "Bug report" template.
+  - type: input
+    id: bundle_id
+    attributes:
+      label: Bundle name + version
+      description: The exact identifier of the bundle you're filing against. Read from `PROVENANCE.md` or the release artifact name.
+      placeholder: merged-lemon-dortmund-37ch-v2-20260524T102747Z
+    validations:
+      required: true
+  - type: dropdown
+    id: format_version
+    attributes:
+      label: Bundle format_version
+      description: From `npz/metadata.json["format_version"]`.
+      options:
+        - "1 (legacy, no disclosure arrays)"
+        - "2 (disclosure arrays, no sex axis)"
+        - "3 (adds sex axis: pooled / F / M)"
+        - "Unknown / not applicable"
+    validations:
+      required: true
+  - type: textarea
+    id: observe
+    attributes:
+      label: What we observe
+      description: Be concrete. Reference exact file paths in the bundle (`npz/metadata.json`, `npz/scalp_power.npz`, `norms_psd.npz`, etc.), array shapes, key sets, and values where relevant. Code-fenced excerpts welcome.
+      placeholder: |
+        `npz/metadata.json["categories"]` lists 8 categories. Every one's `unique_bands` is `["Alpha", "Beta", "Gamma", "HighBeta", "Theta"]` — there is no per-freq category anywhere in the v2 bundle.
+
+        The legacy root-level `norms_psd.npz` has shape `(6 age_bins, 2 conditions, 37 channels, 199 freqs)` and provides the freq-resolved data, but `PROVENANCE.md` labels it "superseded".
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact on consumer
+      description: What does this break / make impossible / force as a workaround? Be specific about which consumer (Coherence Workstation, R analysis, your own script).
+      placeholder: |
+        - CW can't drop the v1 file without losing the spectral ribbon overlay.
+        - PROVENANCE.md labels v1 "superseded" but the v2 bundle is incomplete relative to it — drift risk: a future v2 regen might forget to refresh the side-channel v1, leaving band ribbons on stale norms while z-scores update.
+        - Clinicians see "matched against sex F (n=…)" labels are not possible because no sex axis ships.
+    validations:
+      required: true
+  - type: dropdown
+    id: consumer
+    attributes:
+      label: Reporting consumer
+      description: Which downstream consumer surfaced this?
+      options:
+        - Coherence Workstation desktop app
+        - Library API caller (compare_to_norms / compare_and_report)
+        - Direct NPZ reader (custom script)
+        - R / Excel / external analysis
+        - Documentation reader (PROVENANCE.md, schema docs)
+        - Other (specify in observe field)
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_fix
+    attributes:
+      label: Proposed fix
+      description: Optional. Sketch what the bundle (or build pipeline producing it) should do differently. Cite affected files / variables / schema fields.
+      placeholder: |
+        Add a freq-resolved category to v2 — `npz/psd_spectrum.npz`, keyed by `(bin, condition, channel, freq)`, with `mean`/`sd`/`n` per cell and ideally the same v2 distribution-honest fields (`log_mean`/`log_sd`/`log_transformed`/`normality_p`/`percentile_points`/`percentiles`). List it in `npz/metadata.json` like the other categories.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Concrete, checkable conditions that signal the bundle is fixed. One per line, markdown checkboxes welcome.
+      placeholder: |
+        - [ ] `npz/psd_spectrum.npz` ships in the v2 bundle, keyed by `(bin, condition, channel, freq)`
+        - [ ] `npz/metadata.json` lists the new category with `n_cells`, `unique_channels`, `freq_resolution_hz`, and the freq grid
+        - [ ] `PROVENANCE.md` updated to either call v1 fully superseded with no shipped `norms_psd.npz`, or explain why it's intentionally kept alongside v2
+        - [ ] Shape parity with v1: same age bins, conditions, channel set, freq grid (`(199,)` for the current build)
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: Your honest assessment of the impact.
+      options:
+        - blocker — bundle is unfit for its intended use
+        - high — forces an awkward workaround on every consumer
+        - medium — current behaviour is correct but incomplete or undocumented
+        - low — cosmetic, docs polish, naming, or rare edge case
+    validations:
+      required: true

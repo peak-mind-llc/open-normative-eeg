@@ -1,0 +1,82 @@
+name: Enhancement
+description: Propose a new feature, capability, or improvement to the library, build pipeline, or norms bundle.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an enhancement. Fill in the structured fields below — they map to what a reviewer needs to evaluate scope, accept-or-defer the work, and write a plan.
+
+        For consumer-side issues (Coherence Workstation rendering, plugin glue, UI behavior), file in the [coherence-workstation repo](https://github.com/peak-mind-llc/coherence-workstation/issues) instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve, and for whom? Avoid jumping to a solution here — start with the user-facing or developer-facing gap.
+      placeholder: |
+        e.g. "Clinicians comparing a patient against the LEMON+Dortmund bundle have no way to opt into a sex-matched normative reference. Current behavior pools male and female subjects, hiding sex-driven variance in alpha amplitudes."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Sketch what you'd change. Files/modules touched, schema changes, new APIs. Code-fenced snippets welcome.
+      placeholder: |
+        - Add `NormCell.sex` field (default "pooled")
+        - `build_normative()` fans each subject into a pooled cell + own-sex cell
+        - NPZ format_version bumps to 3 with a `sex` parallel array
+        - `compare_to_norms()` gains an optional `sex=` kwarg with per-metric pooled fallback
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed and why you didn't pick them. "I considered X but rejected it because Y" is exactly the right shape.
+      placeholder: |
+        - Considered shipping three parallel NPZ files per category (pooled/F/M) — rejected because 3× file count, fragile to drift.
+        - Considered shipping differential statistics (F-vs-pooled offsets) — rejected because percentiles don't shift linearly.
+    validations:
+      required: false
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which subsystem does this primarily touch?
+      multiple: true
+      options:
+        - Library API (open_normative/)
+        - Norms bundle schema (NPZ / JSON / CSV / PSD slab)
+        - Build pipeline (scripts/build_norms.py)
+        - Cloud / release (scripts/release.py, cloud_recompute.py, infra/aws/)
+        - Datasets / loaders (open_normative/datasets/)
+        - Tests / CI
+        - Documentation
+        - Other (specify in proposal)
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Concrete, checkable conditions that signal "this is done". One per line, markdown checkboxes welcome.
+      placeholder: |
+        - [ ] `NormCell` carries a `sex` field with default `"pooled"`
+        - [ ] `npz/*.npz` files include a `sex` parallel array; `format_version` reads as 3
+        - [ ] `compare_and_report(sex="F")` returns `resolved_sex_summary` in metadata
+        - [ ] `PROVENANCE.md` documents the cohort sex breakdown per age bin
+        - [ ] Library tests pass (`pytest tests/ --ignore=tests/test_pipeline.py --ignore=tests/test_preprocessing.py`)
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links to related issues/PRs, prior discussions, papers, screenshots, or anything else useful.
+      placeholder: |
+        - Related: bug-report-open-normative-2026-05-28
+        - Wood et al. 2024 (distribution-honesty disclosure)
+    validations:
+      required: false

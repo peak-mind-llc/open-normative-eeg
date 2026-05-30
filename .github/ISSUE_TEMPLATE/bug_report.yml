@@ -1,0 +1,87 @@
+name: Bug report
+description: A library API, build script, or pipeline misbehaves. For norms-bundle content issues use the "Norms bundle issue" template instead.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Reproducible bugs land faster than vague ones — please fill in every required field, even if briefly.
+
+        If the issue is with the **content of a shipped norms bundle** (missing category, wrong z-scores, schema drift), use the "Norms bundle issue" template instead.
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior. Paste exact error messages and tracebacks inline (use triple backticks).
+      placeholder: |
+        Running `build_norms.py --merge` on Dortmund (1216 subject-conditions) OOM-kills the merge container after ~1 hour.
+        Last log line: `Sex distribution: {'F': 752, 'M': 464}`. No traceback (SIGKILL).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+      placeholder: The merge should complete and write norms.json + the npz/ directory, then exit 0.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Numbered steps so someone else can reproduce. Include exact commands, arguments, and inputs. Synthetic data is fine if it triggers the bug.
+      placeholder: |
+        1. Run a fresh Dortmund regen on AWS Batch: `python scripts/cloud_recompute.py submit --dataset dortmund --channels 37 --condition both --source --ba-connectivity --dk-connectivity --save-psd --follow`
+        2. Wait for the array job to SUCCEED
+        3. The merge job (`norm-recompute-merge-jd`) runs, loads 1216 subjects, then gets killed
+        4. AWS Batch reports the merge job as FAILED with no exit code
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Versions matter. At minimum include:
+        - `open_normative` version (or git SHA): `python -c "import open_normative; print(open_normative.__version__)"`
+        - Python version: `python --version`
+        - OS + arch: `uname -a`
+        - Relevant package versions: `pip list | grep -iE 'mne|numpy|scipy|specparam'`
+        - If pipeline/CI bug: where it runs (local / self-hosted runner / AWS Batch)
+      placeholder: |
+        - open_normative: 0.3.0 (git: abe7b7e)
+        - Python: 3.10.20
+        - OS: Linux x86_64 (AWS Batch container, m7i.2xlarge, 32 GB)
+        - mne: 1.7.x, numpy: 1.26.x, scipy: 1.13.x
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / traceback
+      description: Paste relevant log excerpts. Triple-backtick code-fence them. For CI/Batch failures include the CloudWatch log link or `scripts/cloud_recompute.py logs <run_id>` output.
+      placeholder: |
+        ```
+        [23:13:28]   Loaded 1216 subjects from /work/subjects
+        [23:13:28] Merged 1216 subject records from 1 sources
+        [23:13:28]   Age range: 20-70
+        [23:13:28]   Sex distribution: {'F': 752, 'M': 464}
+        [23:13:28]   Conditions: {'ec': 608, 'eo': 608}
+        (no further output — process SIGKILL'd at ~00:12 by kernel OOM)
+        ```
+    validations:
+      required: false
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: Your honest assessment. Reviewers may adjust.
+      options:
+        - blocker — release / production blocked
+        - high — degrades a core workflow but has a workaround
+        - medium — affects a non-core path or only certain inputs
+        - low — cosmetic, doc, or rare edge case
+    validations:
+      required: true
