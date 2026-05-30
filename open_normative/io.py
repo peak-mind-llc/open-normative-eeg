@@ -138,13 +138,32 @@ _CATEGORY_RULES = [
     ("_graph", "graph_metrics"),
 ]
 
+# Metric-name overrides that take precedence over the channel-prefix rules.
+# Maps the cell's `metric` to (target_category, renamed_metric) — the cell
+# is routed to target_category with metric replaced by renamed_metric at
+# write time. The category name conveys "node strength" so the metric drops
+# its `_node_strength` suffix, matching scalp_connectivity.npz convention
+# where the metric is just "dwpli"/"coh".
+_METRIC_CATEGORY_OVERRIDES: dict[str, tuple[str, str]] = {
+    "dwpli_node_strength": ("scalp_node_strength", "dwpli"),
+    "coh_node_strength":   ("scalp_node_strength", "coh"),
+}
 
-def _categorize_channel(channel: str) -> str:
-    """Map a channel name to its NPZ category."""
+
+def _categorize_cell(channel: str, metric: str) -> tuple[str, str]:
+    """Map a (channel, metric) pair to (category, stored_metric).
+
+    Metric-name overrides win first (e.g. node-strength routes to its own
+    category with a renamed metric). Otherwise fall through to the channel-
+    prefix rules and keep the original metric.
+    """
+    override = _METRIC_CATEGORY_OVERRIDES.get(metric)
+    if override is not None:
+        return override
     for prefix, category in _CATEGORY_RULES:
         if channel.startswith(prefix):
-            return category
-    return "scalp_power"
+            return category, metric
+    return "scalp_power", metric
 
 
 def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
@@ -178,11 +197,15 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
     npz_dir = output_dir / "npz"
     npz_dir.mkdir(parents=True, exist_ok=True)
 
-    # Group cells by category
+    # Group cells by category. Routing may rename a cell's metric (e.g.
+    # node-strength → scalp_node_strength.npz with metric "dwpli"/"coh"), so
+    # we substitute the renamed copy via dataclasses.replace before grouping.
     by_category: dict[str, list[NormCell]] = defaultdict(list)
     for cell in cells:
-        cat = _categorize_channel(cell.channel)
-        by_category[cat].append(cell)
+        category, stored_metric = _categorize_cell(cell.channel, cell.metric)
+        if stored_metric != cell.metric:
+            cell = dataclasses.replace(cell, metric=stored_metric)
+        by_category[category].append(cell)
 
     file_manifest = {}
     for category, cat_cells in sorted(by_category.items()):
@@ -276,7 +299,13 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             "size_bytes": out_path.stat().st_size,
         }
 
-    # Write metadata index
+    # Write metadata index. ROI/BA ordering keys are only emitted when the
+    # corresponding source-connectivity categories are present, so consumers
+    # can detect "this bundle has source data, here's how to walk its pair
+    # keys" without scanning every channel name.
+    has_roi_conn = any(c.channel.startswith("_src_conn_") for c in cells)
+    has_ba_conn = any(c.channel.startswith("_src_ba_conn_") for c in cells)
+
     meta = {
         "format_version": 3,
         "total_cells": len(cells),
@@ -284,6 +313,15 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
         "age_bins": sorted(set(c.bin for c in cells)),
         "conditions": sorted(set(c.condition for c in cells)),
     }
+    if has_roi_conn:
+        # Lazy import: open_normative.source is heavy (MNE / forward model
+        # loaders). io.py is imported by code paths that don't need it.
+        from open_normative.source import ROI_DEFINITIONS, ROI_NAMES
+        meta["roi_order"] = list(ROI_NAMES)
+        meta["roi_labels"] = {k: v["label"] for k, v in ROI_DEFINITIONS.items()}
+    if has_ba_conn:
+        from open_normative.source import BA_ORDER
+        meta["ba_order"] = list(BA_ORDER)
     with open(npz_dir / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
 
