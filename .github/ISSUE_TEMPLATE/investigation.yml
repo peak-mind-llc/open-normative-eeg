@@ -1,0 +1,51 @@
+name: Question / Investigation
+description: Open-ended question, design discussion, or "I'm looking at X and confused" — use this when you don't yet have a concrete enhancement or bug to file.
+title: "investigate: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for things like "should we…?", "why does X do Y?", "is the spec consistent with the code?", or pre-work for an enhancement / audit. The CW team's `docs/investigations/` style is a good model.
+
+        Once an investigation lands on a concrete change, file a follow-up "Enhancement" or "Bug" issue and link this one.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: The specific thing you're trying to answer. One sentence ideally; expand below.
+      placeholder: |
+        Should v3 ship a "robust z" companion field per cell — derived from the percentile rank — so the consumer doesn't have to recompute it from `percentiles[]`?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to accomplish? What state were you in when this came up? Why does it matter?
+      placeholder: |
+        Coherence Workstation has to compute the robust z from `percentiles[]` at render time, mirroring `open_normative.io.robust_z_from_percentiles`. The result is identical, but the duplication is brittle (if either side changes the percentile gating rule, the two diverge). If the bundle shipped a precomputed `robust_z_per_cell` array, CW could read it directly.
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you've tried / read
+      description: Files inspected, code paths traced, prior issues/PRs reviewed. Save the next investigator from re-treading your steps.
+      placeholder: |
+        - Read `open_normative/io.py:robust_z_from_percentiles` and the corresponding CW path in `plugins/ins/normative/service.py`.
+        - Both gate tail percentiles (p0.5/p99.5) behind `n >= tail_min_n` (default 200).
+        - Considered: precomputing the rank → z transform inline at write time. Pro: zero duplication. Con: locks the gating into the bundle and a future tail_min_n change requires regenerating every cell.
+    validations:
+      required: false
+  - type: textarea
+    id: pointers
+    attributes:
+      label: Pointers / references
+      description: Files, line numbers, commits, papers, links. Anything that helps locate the source of truth.
+      placeholder: |
+        - open_normative/io.py:376
+        - coherence-workstation: plugins/ins/normative/service.py
+        - Wood et al. 2024 §3.2 (gating rationale)
+    validations:
+      required: false

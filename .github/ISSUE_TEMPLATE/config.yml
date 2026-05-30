@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Coherence Workstation issues
+    url: https://github.com/peak-mind-llc/coherence-workstation/issues
+    about: Issues with how the CW app consumes the norms bundle (rendering, UI, plugin integration) belong in the consumer repo.
