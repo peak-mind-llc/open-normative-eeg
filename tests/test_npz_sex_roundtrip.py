@@ -75,3 +75,21 @@ def test_npz_legacy_v2_without_sex_array_reads_as_pooled(tmp_path: Path):
     loaded = read_norms_npz(npz_dir)
     assert len(loaded) == 1
     assert loaded[0].sex == "pooled"
+
+
+def test_scalp_node_strength_unique_metrics_in_metadata(tmp_path: Path):
+    """When node-strength cells are written, their unique_metrics is the
+    short form (dwpli/coh) — confirms the rename made it through to the
+    category manifest."""
+    cells = [
+        NormCell(
+            bin="20-29", condition="ec", channel="Fz",
+            band="Alpha", metric="dwpli_node_strength",
+            n=10, mean=1.0, sd=0.5,
+            log_mean=None, log_sd=None, log_transformed=False,
+            normality_p=None, percentiles={}, sex="pooled",
+        ),
+    ]
+    write_norms_npz(cells, tmp_path)
+    meta = json.loads((tmp_path / "npz" / "metadata.json").read_text())
+    assert meta["categories"]["scalp_node_strength"]["unique_metrics"] == ["dwpli"]
