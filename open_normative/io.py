@@ -299,7 +299,13 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
             "size_bytes": out_path.stat().st_size,
         }
 
-    # Write metadata index
+    # Write metadata index. ROI/BA ordering keys are only emitted when the
+    # corresponding source-connectivity categories are present, so consumers
+    # can detect "this bundle has source data, here's how to walk its pair
+    # keys" without scanning every channel name.
+    has_roi_conn = any(c.channel.startswith("_src_conn_") for c in cells)
+    has_ba_conn = any(c.channel.startswith("_src_ba_conn_") for c in cells)
+
     meta = {
         "format_version": 3,
         "total_cells": len(cells),
@@ -307,6 +313,15 @@ def write_norms_npz(cells: list[NormCell], output_dir: PathLike) -> dict:
         "age_bins": sorted(set(c.bin for c in cells)),
         "conditions": sorted(set(c.condition for c in cells)),
     }
+    if has_roi_conn:
+        # Lazy import: open_normative.source is heavy (MNE / forward model
+        # loaders). io.py is imported by code paths that don't need it.
+        from open_normative.source import ROI_DEFINITIONS, ROI_NAMES
+        meta["roi_order"] = list(ROI_NAMES)
+        meta["roi_labels"] = {k: v["label"] for k, v in ROI_DEFINITIONS.items()}
+    if has_ba_conn:
+        from open_normative.source import BA_ORDER
+        meta["ba_order"] = list(BA_ORDER)
     with open(npz_dir / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
 
