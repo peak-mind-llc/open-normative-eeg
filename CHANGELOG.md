@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are [
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-30
+
 ### Added
 - New `npz/scalp_node_strength.npz` category. Per-electrode node-strength
   cells (formerly mixed into `scalp_power.npz` under metric names
