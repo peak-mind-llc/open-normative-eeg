@@ -188,6 +188,13 @@ def _build_ba_to_dk():
 
 _BA_TO_DK = _build_ba_to_dk()
 
+# Canonical alphabetical ordering of Brodmann area short names — matches the
+# order BA pair keys are constructed in the bundle (source.py:1388,1401 use
+# sorted(_BA_TO_DK.keys()) and sorted(ba_to_dk_idx.keys()) respectively).
+# Published in npz/metadata.json so consumers can discover the BA vocabulary
+# without scanning every cell's channel name.
+BA_ORDER: list[str] = sorted(_BA_TO_DK.keys())
+
 # Method name mapping for mne-connectivity
 _METHOD_MAP = {
     "dwpli": "wpli2_debiased",
