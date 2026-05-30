@@ -37,9 +37,9 @@ variable "image" {
 }
 
 variable "instance_types" {
-  description = "Spot instance types (ranked by preference) for the array-job compute environment. m-family = 8 vCPU / 32 GB (4:1 ratio) — LEMON+source peaks >4 GB/worker, c-family's 2:1 ratio OOMs."
+  description = "Spot instance types (ranked by preference) for the array-job + merge compute environment. m-family = 4:1 mem:cpu ratio — LEMON+source peaks >4 GB/worker, c-family's 2:1 ratio OOMs. 2xlarge (8 vCPU / 32 GB) fits the array workers; 4xlarge (16 vCPU / 64 GB) is for the v3 merge job which holds ~3× the cell count in RAM due to sex stratification."
   type        = list(string)
-  default     = ["m7i.2xlarge", "m6i.2xlarge", "m5.2xlarge"]
+  default     = ["m7i.2xlarge", "m6i.2xlarge", "m5.2xlarge", "m7i.4xlarge", "m6i.4xlarge", "m5.4xlarge"]
 }
 
 variable "max_vcpus" {
@@ -67,9 +67,9 @@ variable "merge_vcpus" {
 }
 
 variable "merge_memory_mib" {
-  description = "Memory (MiB) for the merge job. Full-run aggregation loads all subjects in RAM — 430 LEMON subjects × ~2 MB each + normative dict build."
+  description = "Memory (MiB) for the merge job. Full-run aggregation loads all subjects + accumulator (per-(bin,sex,cond,ch,band,metric) value lists) into RAM. v3 sex fan-out (pooled+F+M) roughly triples the cell count vs v2 — Dortmund 1216 subject-conditions × full source connectivity OOM'd at 28 GiB. 61440 = 60 GiB on an m*i.4xlarge (64 GB), leaves ~4 GB for OS/Docker."
   type        = number
-  default     = 28672
+  default     = 61440
 }
 
 variable "log_retention_days" {
